@@ -1,8 +1,28 @@
-# ⬢ Axiom Live — real-time educational testing platform
+# ⬢ Axiom Live (Parikshio)
 
-A production-shaped implementation of the brief: **RBAC (Admin / Student), question bank across 5 formats, per-question timers, real-time pushing, timestamped answers, speed-aware ranking, automated grading and institute analytics.**
+> A real-time assessment OS for institutes: author questions, run timed live
+> sessions, capture answers as they arrive, and turn them into actionable
+> analytics.
+
+Parikshio is the repository for **Axiom Live**, a production-shaped
+educational testing platform for faculty and students. It combines an admin
+control room with a focused student experience and a server-authoritative
+real-time assessment engine.
 
 Stack: **Next.js 14 + TypeScript + Tailwind CSS** · **Node.js + Express** · **MongoDB** · **Redis** · **Socket.io**
+
+> **Repository note:** the GitHub repository is named `Parikshio`; the product
+> shown in the UI and application metadata is named **Axiom Live**.
+
+## Contents
+
+- [Run it](#1-run-it)
+- [What it includes](#2-what-it-includes)
+- [Upload a question paper](#3-upload-your-own-question-paper-pdf--word--photo)
+- [Architecture](#4-architecture)
+- [Try the real-time loop](#5-try-the-real-time-loop-in-60-seconds)
+- [Production notes](#6-production-notes)
+- [Project map](#7-project-map)
 
 ---
 
@@ -48,7 +68,10 @@ Without these the platform runs in **ephemeral engine mode** (in-memory store + 
 
 ---
 
-## 2. Where the requirements live
+## 2. What it includes
+
+The current implementation covers the complete author → deliver → grade →
+analyse workflow:
 
 | Requirement | Implementation |
 | --- | --- |
