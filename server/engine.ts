@@ -11,14 +11,41 @@ import type {
   Response,
   StudentQuestion
 } from '../shared/types';
-import { buildQuestionStat, gradeAnswer, rankResponses } from '../shared/grade';
+import { buildQuestionStat, gradeAnswer, gradeForAward, rankResponses } from '../shared/grade';
 import { config } from './config';
 import { cache, cacheKeys } from './cache';
 import { persist } from './mongo';
 import { db, examCode, store, uid } from './store';
 import { emitExam, emitStaff } from './realtime';
+import { broadcastGradeChange, requestAiEvaluation, wantsAutoAi } from './grading';
 
 const lockTimers = new Map<string, NodeJS.Timeout>();
+
+/**
+ * Windows of questions that have already been pushed, kept so an answer replayed
+ * from a student device's offline outbox can be validated against the question
+ * it was actually answered in — by the time a reconnecting device is heard from,
+ * `exam.current` has often moved on. In-memory like the lock timers: losing it
+ * on restart only costs the extra allowance, never a live submission.
+ */
+const windowLedger = new Map<string, Map<string, { pushedAt: number; endsAt: number }>>();
+const LEDGER_LIMIT = 300;
+
+function rememberWindow(exam: Exam, questionId: string, pushedAt: number, endsAt: number): void {
+  let windows = windowLedger.get(exam.id);
+  if (!windows) {
+    windows = new Map();
+    windowLedger.set(exam.id, windows);
+  }
+  // A re-push of the same question replaces its window rather than stacking.
+  windows.delete(questionId);
+  windows.set(questionId, { pushedAt, endsAt });
+  while (windows.size > LEDGER_LIMIT) {
+    const oldest = windows.keys().next();
+    if (oldest.done) break;
+    windows.delete(oldest.value);
+  }
+}
 
 export function sanitizeQuestion(q: Question): StudentQuestion {
   return {
@@ -113,6 +140,7 @@ export async function pushQuestion(
 
   exam.current = { questionId, pushedAt: now, endsAt, locked: false };
   exam.status = 'live';
+  rememberWindow(exam, questionId, now, endsAt);
   persist('exams', exam as unknown as { id: string } & Record<string, unknown>);
   await cache.delPrefix(cacheKeys.examPrefix(exam.id));
 
@@ -157,43 +185,131 @@ export function endExam(exam: Exam): void {
   const timer = lockTimers.get(exam.id);
   if (timer) clearTimeout(timer);
   lockTimers.delete(exam.id);
+  // Nothing can be replayed into a closed session, so the window ledger goes too.
+  windowLedger.delete(exam.id);
   persist('exams', exam as unknown as { id: string } & Record<string, unknown>);
   void cache.delPrefix(cacheKeys.examPrefix(exam.id));
   emitExam(exam.code, 'exam:ended', { examId: exam.id });
   emitStaff(exam.code, 'exam:ended', { examId: exam.id });
 }
 
+export type SubmitRejection =
+  | 'exam-not-live'
+  | 'no-active-question'
+  | 'question-inactive'
+  | 'expired'
+  | 'question-missing'
+  | 'duplicate';
+
 export type SubmitResult =
   | { ok: true; response: Response }
-  | { ok: false; code: number; error: string };
+  | { ok: false; code: number; error: string; reason: SubmitRejection };
 
-export function submitAnswer(
+export interface SubmitPayload {
+  questionId: string;
+  answer: string;
+  /**
+   * Epoch ms (server clock, as synced over the socket) at which the student
+   * pressed submit. Only honoured together with `offline`.
+   */
+  clientSubmittedAt?: number;
+  /** The answer was held in the device's offline outbox and is being replayed. */
+  offline?: boolean;
+}
+
+interface SubmissionWindow {
+  pushedAt: number;
+  endsAt: number;
+  /** The answer arrived after the question's own deadline, rescued by the offline allowance. */
+  replayed: boolean;
+}
+
+function resolveWindow(
   exam: Exam,
-  student: PublicUser,
-  payload: { questionId: string; answer: string }
-): SubmitResult {
-  if (exam.status !== 'live') return { ok: false, code: 409, error: 'This exam is not live right now' };
-  if (!exam.current) return { ok: false, code: 409, error: 'No question is live right now' };
-  if (exam.current.questionId !== payload.questionId)
-    return { ok: false, code: 409, error: 'That question is no longer active' };
+  payload: SubmitPayload,
+  now: number
+): { ok: true; window: SubmissionWindow } | { ok: false; code: number; error: string; reason: SubmitRejection } {
+  const offline = payload.offline === true;
+  const allowance = offline ? config.offlineSyncGraceMs : 0;
+  const current = exam.current;
+
+  if (current && current.questionId === payload.questionId) {
+    // The grace window exists for answers that were already travelling when the
+    // timer hit zero. It used to be computed as `locked ? 0 : graceMs`, but the
+    // lock timer fired exactly at `endsAt`, so by the time `now > endsAt` the flag
+    // was always true and the allowance was never actually granted.
+    if (now <= current.endsAt + config.graceMs + allowance) {
+      return {
+        ok: true,
+        window: {
+          pushedAt: current.pushedAt,
+          endsAt: current.endsAt,
+          replayed: offline && now > current.endsAt + config.graceMs
+        }
+      };
+    }
+    return {
+      ok: false,
+      code: 409,
+      // A replay is late because the network was, so say that rather than
+      // implying the student sat on the answer.
+      error: offline
+        ? 'This device reconnected after the question had already closed'
+        : 'Time is up for this question',
+      reason: 'expired'
+    };
+  }
+
+  if (!offline) {
+    if (!current) return { ok: false, code: 409, error: 'No question is live right now', reason: 'no-active-question' };
+    return { ok: false, code: 409, error: 'That question is no longer active', reason: 'question-inactive' };
+  }
+
+  const past = windowLedger.get(exam.id)?.get(payload.questionId);
+  if (!past) return { ok: false, code: 409, error: 'That question is no longer active', reason: 'question-inactive' };
+  if (now > past.endsAt + config.graceMs + allowance) {
+    return {
+      ok: false,
+      code: 409,
+      error: 'This device reconnected after the question had already closed',
+      reason: 'expired'
+    };
+  }
+  return { ok: true, window: { pushedAt: past.pushedAt, endsAt: past.endsAt, replayed: true } };
+}
+
+export function submitAnswer(exam: Exam, student: PublicUser, payload: SubmitPayload): SubmitResult {
+  if (exam.status !== 'live')
+    return { ok: false, code: 409, error: 'This exam is not live right now', reason: 'exam-not-live' };
 
   const now = Date.now();
-  // The grace window exists for answers that were already travelling when the
-  // timer hit zero. It used to be computed as `locked ? 0 : graceMs`, but the
-  // lock timer fired exactly at `endsAt`, so by the time `now > endsAt` the flag
-  // was always true and the allowance was never actually granted.
-  const deadline = exam.current.endsAt + config.graceMs;
-  if (now > deadline) return { ok: false, code: 409, error: 'Time is up for this question' };
+  const resolved = resolveWindow(exam, payload, now);
+  if (!resolved.ok) return resolved;
+  const { pushedAt, endsAt, replayed } = resolved.window;
 
   const question = db.questionById(payload.questionId);
-  if (!question) return { ok: false, code: 404, error: 'Question not found' };
+  if (!question) return { ok: false, code: 404, error: 'Question not found', reason: 'question-missing' };
 
   const duplicate = db
     .responsesByExamQuestion(exam.id, question.id)
     .find((r) => r.studentId === student.id);
-  if (duplicate) return { ok: false, code: 409, error: 'You already answered this question' };
+  if (duplicate)
+    return { ok: false, code: 409, error: 'You already answered this question', reason: 'duplicate' };
 
-  const { grade, awarded } = gradeAnswer(question, payload.answer);
+  // An offline replay is timed by when the student committed the answer, not by
+  // when the network finally let it through — otherwise every reconnect would
+  // look like the slowest answer in the room. The claim is clamped into the
+  // question's own window so a tampered clock cannot buy a better tiebreak.
+  const claimed = Number(payload.clientSubmittedAt);
+  const answeredAt =
+    payload.offline === true && Number.isFinite(claimed)
+      ? Math.min(Math.max(claimed, pushedAt), endsAt + config.graceMs)
+      : Math.min(now, endsAt + config.graceMs);
+
+  // Dual-mode grading: objective formats are settled by the answer key right
+  // here; subjective ones are handed to the AI evaluator and start as pending.
+  const useAi = wantsAutoAi(question, payload.answer);
+  const { grade, awarded } = useAi ? { grade: 'pending' as const, awarded: 0 } : gradeAnswer(question, payload.answer);
   const response: Response = {
     id: uid('rsp_'),
     examId: exam.id,
@@ -201,13 +317,16 @@ export function submitAnswer(
     studentId: student.id,
     studentName: student.name,
     answer: payload.answer,
-    submittedAt: now,
-    latencyMs: Math.max(0, now - exam.current.pushedAt),
+    submittedAt: answeredAt,
+    latencyMs: Math.max(0, answeredAt - pushedAt),
     grade,
     awarded,
-    manual: false
+    manual: false,
+    ...(payload.offline === true ? { offline: true, syncedAt: now } : {}),
+    ...(grade !== 'pending' ? { gradedBy: 'key' as const, gradedAt: now } : {})
   };
   store.responses.push(response);
+  if (useAi) requestAiEvaluation(response, { silent: true });
   persist('responses', response as unknown as { id: string } & Record<string, unknown>);
   void cache.del(cacheKeys.leaderboard(exam.id), cacheKeys.analytics(exam.id));
 
@@ -217,6 +336,9 @@ export function submitAnswer(
     questionPrompt: question.prompt
   });
   emitExam(exam.code, 'leaderboard:update', { examId: exam.id, entries: getLeaderboard(exam.id) });
+  // A replay lands after `lockQuestion` already published the final board for
+  // that question, so staff need the corrected standings too.
+  if (replayed) emitStaff(exam.code, 'leaderboard:update', { examId: exam.id, entries: getLeaderboard(exam.id) });
 
   return { ok: true, response };
 }
@@ -229,16 +351,15 @@ export function manualGrade(response: Response, awarded: number): Response {
   const safe = Number.isFinite(awarded) ? awarded : 0;
   response.awarded = Math.max(0, Math.min(safe, ceiling));
   response.manual = true;
+  response.gradedBy = 'manual';
+  // Timestamped so an AI evaluation that was already in flight does not
+  // overwrite this score when it lands.
+  response.gradedAt = Date.now();
   // Any partial credit counts as graded; 'pending' would mean "still needs a
   // human", which is exactly what just happened.
-  response.grade = response.awarded > 0 ? 'correct' : 'incorrect';
+  response.grade = gradeForAward(response.awarded);
   persist('responses', response as unknown as { id: string } & Record<string, unknown>);
-  const exam = db.examById(response.examId);
-  if (exam) {
-    void cache.delPrefix(cacheKeys.examPrefix(exam.id));
-    emitExam(exam.code, 'leaderboard:update', { examId: exam.id, entries: getLeaderboard(exam.id) });
-    emitStaff(exam.code, 'leaderboard:update', { examId: exam.id, entries: getLeaderboard(exam.id) });
-  }
+  broadcastGradeChange(response, true);
   return response;
 }
 

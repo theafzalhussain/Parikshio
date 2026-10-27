@@ -128,6 +128,40 @@ export interface ExamPublic {
   endedAt?: number;
 }
 
+/**
+ * Which engine produced a response's current score.
+ * - `key`    → deterministic answer-key match (MCQ, True/False, Fill in the blank)
+ * - `ai`     → AI evaluator (Short / Long answers)
+ * - `manual` → a faculty member scored or overrode it
+ */
+export type GradingMode = 'key' | 'ai' | 'manual';
+
+export type AiEvalStatus = 'queued' | 'running' | 'done' | 'failed';
+
+/** Result (or progress) of an AI evaluation attached to a subjective response. */
+export interface AiEvaluation {
+  status: AiEvalStatus;
+  /** Model that produced the result, or the last one tried when it failed. */
+  model?: string;
+  /** Points the evaluator awarded — already clamped to [0, maxPoints] on the server. */
+  score?: number;
+  maxPoints: number;
+  verdict?: 'correct' | 'partial' | 'incorrect';
+  /** Teacher-facing explanation of the score. */
+  feedback?: string;
+  strengths?: string[];
+  improvements?: string[];
+  /** 0–1: how sure the evaluator is that a careful examiner would agree. */
+  confidence?: number;
+  /** Low confidence or a suspected prompt-injection attempt — a human should look. */
+  needsReview?: boolean;
+  error?: string;
+  attempts: number;
+  requestedAt: number;
+  completedAt?: number;
+  latencyMs?: number;
+}
+
 export interface Response {
   id: string;
   examId: string;
@@ -140,6 +174,39 @@ export interface Response {
   grade: Grade;
   awarded: number;
   manual: boolean;
+  /**
+   * The student's device held this answer in its offline outbox and replayed it
+   * after reconnecting. `submittedAt` is then the moment they pressed submit;
+   * `syncedAt` is the moment the server actually received it.
+   */
+  offline?: boolean;
+  syncedAt?: number;
+  /** How the current grade was produced. Absent on rows that are still pending. */
+  gradedBy?: GradingMode;
+  /** Epoch ms of the most recent grade change (key, AI or manual). */
+  gradedAt?: number;
+  /** AI evaluation for short / long answers. Never sent to student devices. */
+  ai?: AiEvaluation;
+}
+
+/** Admin-facing snapshot of the dual-mode grading engine. */
+export interface GradingStatus {
+  ai: {
+    enabled: boolean;
+    autoGrade: boolean;
+    provider: 'gemini';
+    /** Configured model chain, in the order it is tried. */
+    models: string[];
+    /** Models temporarily skipped after an overload / timeout / rate limit. */
+    cooling: string[];
+    /** Every model is out of quota for a long while (daily limit) — grade by hand or retry later. */
+    quotaExhausted: boolean;
+    queued: number;
+    running: number;
+    lastError: string | null;
+  };
+  /** Engine that grades each question format on submission. */
+  modes: Record<QuestionType, GradingMode | 'pending'>;
 }
 
 export interface LeaderboardEntry {
@@ -200,6 +267,10 @@ export interface ServerToClientEvents {
   'exam:ended': (payload: { examId: string }) => void;
   'leaderboard:update': (payload: { examId: string; entries: LeaderboardEntry[] }) => void;
   'response:new': (payload: { examId: string; response: Response; questionPrompt: string }) => void;
+  /** Staff only — a response's grade or AI evaluation state changed. */
+  'response:graded': (payload: { examId: string; response: Response }) => void;
+  /** Sent to one student when a late (AI / manual) grade lands on a closed question. */
+  'answer:graded': (payload: { examId: string; questionId: string; grade: Grade; awarded: number }) => void;
   'time:sync': (payload: { serverTime: number }) => void;
   'notice': (payload: { kind: 'info' | 'success' | 'warn'; message: string }) => void;
   'paper:imported': (payload: { paperId: string; name: string; questions: number }) => void;

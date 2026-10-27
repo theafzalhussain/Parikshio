@@ -6,6 +6,16 @@ import { MAX_UPLOAD_BYTES, extractTextFromFile, kindForFile } from './files';
 import { emitAllStaff } from './realtime';
 import { analytics, buildExamPublic, endExam, getLeaderboard, lockQuestion, manualGrade, pushQuestion, sanitizeQuestion, activeWindow } from './engine';
 import {
+  aiGradingEnabled,
+  gradingStatus,
+  previewEvaluation,
+  queueExamAiEvaluations,
+  requestAiEvaluation,
+  type BulkScope
+} from './grading';
+import { GeminiError } from './gemini';
+import { isSubjective } from '../shared/grade';
+import {
   authenticate,
   hashPassword,
   issueSession,
@@ -20,6 +30,7 @@ import { config, isProd } from './config';
 import {
   clientIp,
   clearLoginPenalties,
+  createRateLimiter,
   createResetToken,
   forgotPasswordEmailLimiter,
   forgotPasswordLimiter,
@@ -480,8 +491,10 @@ api.get('/admin/overview', authenticate, requireRole('admin'), asyncRoute(async 
       students: students.length,
       responses: store.responses.length,
       accuracy,
-      pendingReviews: store.responses.filter((r) => r.grade === 'pending').length
+      pendingReviews: store.responses.filter((r) => r.grade === 'pending').length,
+      aiGraded: store.responses.filter((r) => r.gradedBy === 'ai').length
     },
+    grading: gradingStatus(),
     byType,
     exams: rows,
     recentActivity,
@@ -546,8 +559,13 @@ function validateQuestion(input: Partial<QuestionInput>): string | null {
 
   if (['fill', 'short', 'long'].includes(input.type)) {
     const accepted = (input.acceptedAnswers ?? []).filter((a) => String(a).trim());
-    if (input.type !== 'long' && accepted.length === 0)
+    // Fill-in-the-blank is always key-graded. Short answers can be scored by the
+    // AI evaluator without a key, but need one when AI is off (or nothing would
+    // ever grade them automatically).
+    if (input.type === 'fill' && accepted.length === 0)
       return 'Add at least one accepted answer for auto-grading';
+    if (input.type === 'short' && accepted.length === 0 && !aiGradingEnabled())
+      return 'Add at least one accepted answer (or enable AI grading with GEMINI_API_KEY)';
     if (accepted.length > MAX_ACCEPTED) return `At most ${MAX_ACCEPTED} accepted answers`;
     if (accepted.some((a) => String(a).length > MAX_ANSWER_CHARS))
       return `Each accepted answer must be under ${MAX_ANSWER_CHARS} characters`;
@@ -927,21 +945,28 @@ api.post('/exams', authenticate, requireRole('admin'), (req: AuthedRequest, res)
 api.get('/exams/:id', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
   const exam = db.examById(req.params.id);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
+  const all = store.responses
+    .filter((r) => r.examId === exam.id)
+    .sort((a, b) => b.submittedAt - a.submittedAt);
+  // Latest 40 for the live feed, plus anything still awaiting a grade so older
+  // reviews and failed AI evaluations never fall off the control room.
+  const recent = all.slice(0, 40);
+  const recentIds = new Set(recent.map((r) => r.id));
+  const outstanding = all.filter(
+    (r) => !recentIds.has(r.id) && (r.grade === 'pending' || r.ai?.status === 'failed' || r.ai?.needsReview)
+  );
   res.json({
     exam,
     questions: exam.questionIds.map((id) => db.questionById(id)).filter(Boolean),
     active: activeWindow(exam),
     leaderboard: getLeaderboard(exam.id),
-    responses: store.responses
-      .filter((r) => r.examId === exam.id)
-      .sort((a, b) => b.submittedAt - a.submittedAt)
-      .slice(0, 40)
-      .map((r) => ({
-        ...r,
-        questionPrompt: db.questionById(r.questionId)?.prompt ?? '',
-        questionType: db.questionById(r.questionId)?.type ?? 'mcq',
-        maxPoints: db.questionById(r.questionId)?.points ?? 0
-      }))
+    grading: gradingStatus(),
+    responses: [...recent, ...outstanding].map((r) => ({
+      ...r,
+      questionPrompt: db.questionById(r.questionId)?.prompt ?? '',
+      questionType: db.questionById(r.questionId)?.type ?? 'mcq',
+      maxPoints: db.questionById(r.questionId)?.points ?? 0
+    }))
   });
 });
 
@@ -1029,6 +1054,133 @@ api.post('/responses/:id/grade', authenticate, requireRole('admin'), (req: Authe
   res.json({ response: updated });
 });
 
+// ── Admin: dual-mode grading (answer key + AI evaluation) ─────
+/**
+ * AI calls cost money and quota, so even admins are throttled per account.
+ * Keyed by user id (these routes are authenticated) rather than IP, so faculty
+ * sharing an institute network do not throttle each other.
+ */
+const aiActionLimiter = createRateLimiter({
+  name: 'ai-grading',
+  windowMs: 60_000,
+  max: 40,
+  keyFor: (req) => (req as AuthedRequest).user?.id ?? clientIp(req),
+  message: 'Too many AI grading requests — wait a minute and try again.'
+});
+const aiBulkLimiter = createRateLimiter({
+  name: 'ai-grading-bulk',
+  windowMs: 60_000,
+  max: 6,
+  keyFor: (req) => (req as AuthedRequest).user?.id ?? clientIp(req),
+  message: 'Bulk AI grading was requested too often — wait a minute and try again.'
+});
+
+/** Which engine grades which format, and the live state of the AI queue. */
+api.get('/grading/status', authenticate, requireRole('admin'), (_req: AuthedRequest, res) => {
+  res.json({ grading: gradingStatus() });
+});
+
+/**
+ * AI Evaluation API — dry run. Scores an answer for an existing short/long
+ * question (`questionId`) or an unsaved draft (`question`) without storing
+ * anything. Lets faculty test a rubric before the session goes live.
+ */
+api.post(
+  '/grading/evaluate',
+  authenticate,
+  requireRole('admin'),
+  aiActionLimiter,
+  asyncRoute(async (req: AuthedRequest, res) => {
+    if (!aiGradingEnabled()) {
+      return res.status(503).json({ error: 'AI grading is not configured on this server (set GEMINI_API_KEY).' });
+    }
+    const answer = String(req.body?.answer ?? '');
+    if (!answer.trim()) return res.status(400).json({ error: 'Provide a student answer to evaluate' });
+    if (answer.length > 20_000) return res.status(400).json({ error: 'Answer must be under 20,000 characters' });
+
+    let question: Question | undefined;
+    if (req.body?.questionId) {
+      question = db.questionById(String(req.body.questionId));
+      if (!question) return res.status(404).json({ error: 'Question not found' });
+    } else if (req.body?.question && typeof req.body.question === 'object') {
+      const draft = req.body.question as Partial<QuestionInput>;
+      const points = intOrNull(draft.points);
+      if (!draft.prompt || !String(draft.prompt).trim()) return res.status(400).json({ error: 'Question prompt is required' });
+      if (draft.type !== 'short' && draft.type !== 'long') return res.status(400).json({ error: 'Draft type must be short or long' });
+      if (points === null || points <= 0 || points > MAX_POINTS) return res.status(400).json({ error: 'Points must be a positive whole number' });
+      question = {
+        id: 'draft',
+        type: draft.type,
+        prompt: String(draft.prompt).slice(0, MAX_PROMPT_CHARS),
+        topic: String(draft.topic ?? 'General'),
+        difficulty: 'medium',
+        options: [],
+        correctOptionIndex: null,
+        acceptedAnswers: (Array.isArray(draft.acceptedAnswers) ? draft.acceptedAnswers : [])
+          .map((a) => String(a).trim().slice(0, MAX_ANSWER_CHARS))
+          .filter(Boolean)
+          .slice(0, MAX_ACCEPTED),
+        points,
+        timerSeconds: 60,
+        explanation: String(draft.explanation ?? '').slice(0, MAX_ANSWER_CHARS),
+        createdBy: req.user!.id,
+        createdAt: Date.now()
+      };
+    } else {
+      return res.status(400).json({ error: 'Send either questionId or a draft question' });
+    }
+
+    if (!isSubjective(question.type)) {
+      return res.status(400).json({
+        error: 'AI evaluation is for short and long answers. MCQ, True/False and Fill in the blank are graded by the answer key.'
+      });
+    }
+
+    try {
+      const evaluation = await previewEvaluation(question, answer);
+      return res.json({ evaluation });
+    } catch (err) {
+      const status = err instanceof GeminiError && (err.kind === 'config' || err.kind === 'quota') ? 503 : 502;
+      return res.status(status).json({ error: `AI evaluation failed: ${(err as Error).message}` });
+    }
+  })
+);
+
+/** (Re-)run AI evaluation for one stored response. The result arrives over the socket. */
+api.post('/responses/:id/ai-grade', authenticate, requireRole('admin'), aiActionLimiter, (req: AuthedRequest, res) => {
+  const response = db.responseById(req.params.id);
+  if (!response) return res.status(404).json({ error: 'Response not found' });
+  const result = requestAiEvaluation(response);
+  if (!result.ok) return res.status(result.status).json({ error: result.error });
+  recordAudit({
+    action: 'grading.ai_requested',
+    actorId: req.user!.id,
+    actorName: req.user!.name,
+    detail: `response=${response.id} exam=${response.examId}`,
+    ip: clientIp(req)
+  });
+  res.status(202).json({ response: result.response, queued: result.queued });
+});
+
+/** Queue AI evaluation for every pending (or every non-manual) subjective response in a session. */
+api.post('/exams/:id/ai-grade', authenticate, requireRole('admin'), aiBulkLimiter, (req: AuthedRequest, res) => {
+  const exam = db.examById(req.params.id);
+  if (!exam) return res.status(404).json({ error: 'Exam not found' });
+  if (!aiGradingEnabled()) {
+    return res.status(503).json({ error: 'AI grading is not configured on this server (set GEMINI_API_KEY).' });
+  }
+  const scope: BulkScope = req.body?.scope === 'all' ? 'all' : 'pending';
+  const result = queueExamAiEvaluations(exam, scope);
+  recordAudit({
+    action: 'grading.ai_bulk_requested',
+    actorId: req.user!.id,
+    actorName: req.user!.name,
+    detail: `exam=${exam.id} scope=${scope} queued=${result.queued}`,
+    ip: clientIp(req)
+  });
+  res.status(202).json({ ...result, scope, grading: gradingStatus() });
+});
+
 // ── Student ───────────────────────────────────────────────────
 api.get('/student/exams', authenticate, requireRole('student'), (_req: AuthedRequest, res) => {
   const exams = db
@@ -1068,16 +1220,32 @@ api.get('/student/exams/by-code/:code', authenticate, requireRole('student'), (r
 });
 
 api.post('/student/answers', authenticate, requireRole('student'), asyncRoute(async (req: AuthedRequest, res) => {
-  const { examId, questionId, answer } = req.body ?? {};
+  const { examId, questionId, answer, clientSubmittedAt, offline } = req.body ?? {};
   const exam = db.examById(String(examId));
-  if (!exam) return res.status(404).json({ error: 'Exam not found' });
+  if (!exam) return res.status(404).json({ error: 'Exam not found', code: 'exam-missing' });
   const { submitAnswer } = await import('./engine');
-  const result = submitAnswer(exam, req.user!, { questionId: String(questionId), answer: String(answer ?? '') });
-  if (!result.ok) return res.status(result.code).json({ error: result.error });
+  const result = submitAnswer(exam, req.user!, {
+    questionId: String(questionId),
+    answer: String(answer ?? ''),
+    // Set by the student device when replaying an answer its offline outbox held
+    // while the network was down.
+    offline: offline === true,
+    clientSubmittedAt: Number(clientSubmittedAt)
+  });
+  // The reason code lets the device decide whether to retry or drop the record,
+  // instead of pattern-matching the human-readable message.
+  if (!result.ok) return res.status(result.code).json({ error: result.error, code: result.reason });
+  // AI evaluation internals (feedback that may paraphrase the model answer) are
+  // staff-only; the student gets a receipt, not the marking.
+  const { ai: _ai, gradedBy: _gradedBy, gradedAt: _gradedAt, ...receipt } = result.response;
+  // Results stay sealed only while the answer's own question is still open — a
+  // replayed answer for a question that has since closed may show its score.
+  const sealed = exam.current?.questionId === result.response.questionId && !exam.current.locked;
   res.json({
     response: {
-      ...result.response,
-      grade: exam.current?.locked ? result.response.grade : 'pending'
+      ...receipt,
+      grade: sealed ? 'pending' : result.response.grade,
+      awarded: sealed ? 0 : result.response.awarded
     },
     leaderboard: getLeaderboard(exam.id),
     exam: buildExamPublic(exam, req.user!.id)

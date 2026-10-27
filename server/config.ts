@@ -48,6 +48,15 @@ export const config = {
   redisUrl: (process.env.REDIS_URL ?? '').trim(),
   /** Grace window (ms) after a question locks during which a late submit is still accepted */
   graceMs: 1500,
+  /**
+   * Extra window (ms) granted only to answers replayed from a student device's
+   * offline outbox. A phone that drops its connection at the buzzer reconnects
+   * seconds later, and without this allowance the answer it saved locally would
+   * be thrown away. The replay still has to claim a submit time that falls
+   * inside the question's own window, so this buys delivery time, not thinking
+   * time. Set OFFLINE_SYNC_GRACE_MS=0 to refuse late replays entirely.
+   */
+  offlineSyncGraceMs: nonNegativeInt(process.env.OFFLINE_SYNC_GRACE_MS, 45_000),
   nodeEnv,
   /**
    * Extra origins allowed to open a WebSocket. The UI and API share one origin,
@@ -81,7 +90,63 @@ export const config = {
     }
   },
   /** Password-reset link lifetime (ms). */
-  passwordResetTtlMs: 30 * 60 * 1000
+  passwordResetTtlMs: 30 * 60 * 1000,
+  /**
+   * Gemini — AI evaluation of short / long answers.
+   * Enabled only when GEMINI_API_KEY is set; without it subjective answers fall
+   * back to answer-key matching (short) or manual review (long).
+   */
+  gemini: {
+    apiKey: (process.env.GEMINI_API_KEY ?? '').trim(),
+    /**
+     * Tried in order. When a model is overloaded (503/429), times out or has been
+     * retired (404), the grader cools it down and moves to the next one.
+     */
+    models: listFromEnv(process.env.GEMINI_MODELS, [
+      'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3.8-flash',
+      'gemini-3.1-flash-lite'
+    ]),
+    /** Reasoning depth. `low` keeps grading at a few seconds; blank disables the setting. */
+    thinkingLevel: (process.env.GEMINI_THINKING_LEVEL ?? 'low').trim(),
+    timeoutMs: positiveInt(process.env.GEMINI_TIMEOUT_MS, 30_000),
+    /** Parallel AI requests (each one grades a whole batch of answers). */
+    concurrency: positiveInt(process.env.AI_GRADING_CONCURRENCY, 3),
+    /**
+     * Answers to the same question graded together in one request. Batching is
+     * what lets a class of 60 fit inside Gemini's per-minute / per-day quotas.
+     */
+    batchSize: Math.min(25, positiveInt(process.env.AI_GRADING_BATCH_SIZE, 10)),
+    /** Set AI_AUTO_GRADE=false to only run AI when an admin asks for it. */
+    autoGrade: (process.env.AI_AUTO_GRADE ?? 'true').trim().toLowerCase() !== 'false',
+    /** Below this confidence an AI score is kept but flagged for human review. */
+    reviewBelowConfidence: 0.6,
+    /** AI_GRADING_DEBUG=true logs every Gemini call (model, status, latency) — no answer text. */
+    debug: (process.env.AI_GRADING_DEBUG ?? '').trim().toLowerCase() === 'true',
+    get enabled() {
+      return this.apiKey.length > 0 && this.models.length > 0;
+    }
+  }
 };
+
+function listFromEnv(raw: string | undefined, fallback: string[]): string[] {
+  const values = (raw ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return values.length ? values : fallback;
+}
+
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+/** Like `positiveInt`, but 0 is a meaningful value (it disables the window). */
+function nonNegativeInt(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
 
 export const isProd = isProduction;

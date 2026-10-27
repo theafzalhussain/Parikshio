@@ -3,11 +3,12 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
-import { LogOut } from 'lucide-react';
+import { CloudUpload, LogOut, RefreshCw } from 'lucide-react';
 import { BrandLink, LivePill } from './Logo';
 import { Avatar } from './ui/Pills';
 import { useAuth } from '@/lib/auth';
 import { useSocket, useSocketStatus } from '@/lib/socket';
+import { useOutbox } from '@/lib/useOutbox';
 import { cx } from '@/lib/api';
 
 export function StudentShell({
@@ -23,6 +24,10 @@ export function StudentShell({
   const { user, ready, logout } = useAuth();
   const socket = useSocket();
   const status = useSocketStatus(socket);
+  const outbox = useOutbox(user?.id ?? null);
+  // The browser's own verdict outranks the socket: a dropped WebSocket on a
+  // working network is a server blip, not an offline device.
+  const connected = outbox.online && status === 'online';
 
   useEffect(() => {
     if (!ready) return;
@@ -54,9 +59,22 @@ export function StudentShell({
           <div className={cx('mx-auto flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6', maxWidth)}>
             <BrandLink href="/student" />
             <div className="flex items-center gap-2.5">
+              {outbox.pending.length > 0 && (
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/25 bg-amber-400/10 px-2.5 py-1.5 text-[10.5px] uppercase tracking-[0.12em] text-amber-300"
+                  title="Answers saved on this device, waiting to be delivered"
+                >
+                  {outbox.syncing ? (
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <CloudUpload className="h-3 w-3" />
+                  )}
+                  {outbox.pending.length} queued
+                </span>
+              )}
               <span className="hidden items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-[10.5px] uppercase tracking-[0.12em] text-white/40 sm:inline-flex">
-                <span className={cx('h-1.5 w-1.5 rounded-full', status === 'online' ? 'bg-mint-400' : 'bg-ember-500')} />
-                {status}
+                <span className={cx('h-1.5 w-1.5 rounded-full', connected ? 'bg-mint-400' : 'bg-ember-500')} />
+                {connected ? 'online' : 'offline'}
               </span>
               <Link
                 href="/student"

@@ -13,11 +13,13 @@ import {
   Lock,
   Radio,
   Send,
+  Sparkles,
   Timer,
   Users,
   Zap
 } from 'lucide-react';
 import { AdminShell } from '@/components/AdminShell';
+import { AiEngineBadge, AiEvaluationCard, AiStatusChip, GradedByTag, isAiBusy } from '@/components/AiGrading';
 import { RadialTimer } from '@/components/charts/Charts';
 import { Leaderboard } from '@/components/Leaderboard';
 import { Badge, Divider, EmptyState, Panel, SectionHead } from '@/components/ui/Panel';
@@ -28,15 +30,36 @@ import { Avatar, GradePill, Loading, StatusPill, TypePill, typeLabel } from '@/c
 import { useToast } from '@/components/ui/Toast';
 import { api, cx, fmtMs, fmtRelative } from '@/lib/api';
 import { useServerClock, useSocket } from '@/lib/socket';
-import type { ActiveWindow, Exam, LeaderboardEntry, Question, QuestionType, Response } from '@shared/types';
+import type {
+  ActiveWindow,
+  Exam,
+  GradingStatus,
+  LeaderboardEntry,
+  Question,
+  QuestionType,
+  Response
+} from '@shared/types';
 
 interface Detail {
   exam: Exam;
   questions: Question[];
   active: (ActiveWindow & { question: { id: string; prompt: string; type: QuestionType } }) | null;
   leaderboard: LeaderboardEntry[];
+  grading: GradingStatus;
   responses: (Response & { questionPrompt: string; questionType: QuestionType; maxPoints: number })[];
 }
+
+type FeedRow = Detail['responses'][number];
+
+const isSubjectiveType = (type: QuestionType) => type === 'short' || type === 'long';
+
+/** Rows the "AI-grade pending" bulk action would pick up. */
+const awaitsAi = (r: FeedRow) =>
+  isSubjectiveType(r.questionType) &&
+  r.gradedBy !== 'manual' &&
+  r.answer.trim().length > 0 &&
+  !isAiBusy(r.ai) &&
+  (r.grade === 'pending' || r.ai?.status === 'failed');
 
 function AnswerChip({
   response,
@@ -78,6 +101,9 @@ export default function ControlRoomPage() {
   const [grading, setGrading] = useState<Detail['responses'][number] | null>(null);
   const [gradeValue, setGradeValue] = useState('');
   const [confirmEnd, setConfirmEnd] = useState(false);
+  const [engine, setEngine] = useState<GradingStatus | null>(null);
+  const [aiBusyId, setAiBusyId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const detailRef = useRef<Detail | null>(null);
   detailRef.current = detail;
 
@@ -87,6 +113,7 @@ export default function ControlRoomPage() {
       setDetail(res);
       setBoard(res.leaderboard);
       setFeed(res.responses);
+      setEngine(res.grading);
       setOverrides((prev) => {
         const next = { ...prev };
         res.questions.forEach((q) => {
@@ -108,7 +135,16 @@ export default function ControlRoomPage() {
   useEffect(() => {
     const code = detailRef.current?.exam.code;
     if (!code) return;
-    socket.emit('join:exam', { examCode: code, role: 'admin' });
+    const join = () => socket.emit('join:exam', { examCode: code, role: 'admin' });
+    // Socket.io rooms do not survive a reconnect: rejoin the staff room, and
+    // reload so submissions and AI grades that landed while this device was
+    // offline show up without a manual refresh.
+    const onReconnect = () => {
+      join();
+      void load();
+    };
+    if (socket.connected) join();
+    socket.on('connect', onReconnect);
 
     const onResponse = (payload: { examId: string; response: Response; questionPrompt: string }) => {
       if (payload.examId !== examId) return;
@@ -126,15 +162,40 @@ export default function ControlRoomPage() {
     const onBoard = (payload: { examId: string; entries: LeaderboardEntry[] }) => {
       if (payload.examId === examId) setBoard(payload.entries);
     };
+    // AI results (and progress) and grade overrides land here in real time.
+    const onGraded = (payload: { examId: string; response: Response }) => {
+      if (payload.examId !== examId) return;
+      setFeed((prev) => {
+        const idx = prev.findIndex((r) => r.id === payload.response.id);
+        if (idx === -1) {
+          const question = detailRef.current?.questions.find((q) => q.id === payload.response.questionId);
+          return [
+            {
+              ...payload.response,
+              questionPrompt: question?.prompt ?? '',
+              questionType: question?.type ?? 'short',
+              maxPoints: question?.points ?? 0
+            },
+            ...prev
+          ];
+        }
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...payload.response };
+        return next;
+      });
+    };
     const onLocked = () => void load();
     const onEnded = () => void load();
 
     socket.on('response:new', onResponse);
+    socket.on('response:graded', onGraded);
     socket.on('leaderboard:update', onBoard);
     socket.on('question:locked', onLocked);
     socket.on('exam:ended', onEnded);
     return () => {
+      socket.off('connect', onReconnect);
       socket.off('response:new', onResponse);
+      socket.off('response:graded', onGraded);
       socket.off('leaderboard:update', onBoard);
       socket.off('question:locked', onLocked);
       socket.off('exam:ended', onEnded);
@@ -207,6 +268,52 @@ export default function ControlRoomPage() {
     }
   }
 
+  /** Queue (or re-run) the AI evaluator for one response; the result streams in over the socket. */
+  async function rerunAi(row: FeedRow) {
+    setAiBusyId(row.id);
+    try {
+      const res = await api<{ response: Response; queued: boolean }>(`/responses/${row.id}/ai-grade`, { method: 'POST' });
+      setFeed((prev) => prev.map((r) => (r.id === row.id ? { ...r, ...res.response } : r)));
+      push({
+        kind: 'info',
+        title: res.queued ? 'Sent to the AI evaluator' : 'Already being evaluated',
+        body: `${row.studentName}'s answer — the score updates here automatically.`
+      });
+    } catch (err) {
+      push({ kind: 'error', title: 'AI evaluation not started', body: (err as Error).message });
+    } finally {
+      setAiBusyId(null);
+    }
+  }
+
+  async function bulkAi() {
+    setBulkBusy(true);
+    try {
+      const res = await api<{ queued: number; skipped: number; grading: GradingStatus }>(`/exams/${examId}/ai-grade`, {
+        method: 'POST',
+        body: { scope: 'pending' }
+      });
+      setEngine(res.grading);
+      push({
+        kind: res.queued ? 'success' : 'info',
+        title: res.queued ? `${res.queued} answer${res.queued === 1 ? '' : 's'} sent to AI` : 'Nothing to grade',
+        body: res.queued
+          ? 'Scores appear in the feed as each evaluation finishes.'
+          : 'Every short and long answer already has a grade or is in the queue.'
+      });
+    } catch (err) {
+      push({ kind: 'error', title: 'Bulk AI grading failed', body: (err as Error).message });
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  const aiEnabled = !!engine?.ai.enabled;
+  const aiInFlight = feed.filter((r) => isAiBusy(r.ai)).length;
+  const aiPending = feed.filter(awaitsAi).length;
+  // Keep the open scoring modal in sync with live AI updates for the same row.
+  const gradingRow = grading ? feed.find((r) => r.id === grading.id) ?? grading : null;
+
   const exam = detail?.exam;
 
   return (
@@ -215,6 +322,7 @@ export default function ControlRoomPage() {
       subtitle={exam ? `${exam.subject} · join code ${exam.code} · ${exam.questionIds.length} questions` : undefined}
       action={
         <div className="flex items-center gap-2">
+          <AiEngineBadge status={engine} busy={aiInFlight} />
           {exam && <StatusPill status={exam.status} />}
           <LinkButton href={`/admin/analytics/${examId}`} variant="secondary" size="sm">
             <BarChart3 className="h-3.5 w-3.5" /> Analytics
@@ -422,8 +530,28 @@ export default function ControlRoomPage() {
                 <SectionHead
                   eyebrow="Live feed"
                   title="Submissions"
-                  sub="Timestamped on arrival · latency measured from the moment you pushed."
-                  action={<Badge tone="lime">{feed.length} captured</Badge>}
+                  sub={
+                    aiEnabled
+                      ? 'MCQ, True/False and Fill are graded by the answer key instantly · Short and Long answers are scored by the AI evaluator as they arrive.'
+                      : 'Timestamped on arrival · latency measured from the moment you pushed.'
+                  }
+                  action={
+                    <div className="flex flex-wrap items-center gap-2">
+                      {aiEnabled && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={bulkAi}
+                          loading={bulkBusy}
+                          disabled={aiPending === 0}
+                          title="Send every ungraded or failed short/long answer in this session to the AI evaluator"
+                        >
+                          <Sparkles className="h-3.5 w-3.5" /> AI-grade pending{aiPending ? ` (${aiPending})` : ''}
+                        </Button>
+                      )}
+                      <Badge tone="lime">{feed.length} captured</Badge>
+                    </div>
+                  }
                 />
                 <div className="mt-4 max-h-[420px] space-y-2 overflow-y-auto pr-1">
                   {feed.length === 0 && (
@@ -447,8 +575,14 @@ export default function ControlRoomPage() {
                         options={detail.questions.find((q) => q.id === r.questionId)?.options ?? []}
                       />
                       <span className="num text-[10.5px] text-white/30">{fmtMs(r.latencyMs)}</span>
+                      {isSubjectiveType(r.questionType) && <AiStatusChip ai={r.ai} />}
                       <GradePill grade={r.grade} awarded={r.awarded} points={r.maxPoints} />
-                      {r.grade === 'pending' ? (
+                      {r.ai?.status === 'failed' && aiEnabled && r.gradedBy !== 'manual' && (
+                        <Button size="sm" variant="ghost" onClick={() => rerunAi(r)} loading={aiBusyId === r.id}>
+                          Retry AI
+                        </Button>
+                      )}
+                      {r.grade === 'pending' && !isAiBusy(r.ai) ? (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -467,7 +601,7 @@ export default function ControlRoomPage() {
                           }}
                           className="text-[10.5px] text-white/25 underline-offset-2 hover:text-white/60 hover:underline"
                         >
-                          edit
+                          {r.ai?.status === 'done' ? 'review' : 'edit'}
                         </button>
                       )}
                     </div>
@@ -522,11 +656,11 @@ export default function ControlRoomPage() {
       )}
 
       <Modal
-        open={!!grading}
+        open={!!gradingRow}
         onClose={() => setGrading(null)}
         title="Score this response"
-        description={grading ? `${grading.studentName} · ${grading.questionPrompt.slice(0, 90)}` : undefined}
-        width="max-w-lg"
+        description={gradingRow ? `${gradingRow.studentName} · ${gradingRow.questionPrompt.slice(0, 90)}` : undefined}
+        width="max-w-2xl"
         footer={
           <>
             <Button variant="ghost" size="sm" onClick={() => setGrading(null)}>
@@ -538,31 +672,51 @@ export default function ControlRoomPage() {
           </>
         }
       >
-        {grading && (
+        {gradingRow && (
           <div className="space-y-4">
             <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3">
-              <p className="text-[10.5px] uppercase tracking-[0.12em] text-white/30">student answer</p>
-              <p className="mt-1.5 whitespace-pre-wrap text-[12.5px] leading-relaxed text-white/75">
-                {grading.answer || '— no answer submitted —'}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[10.5px] uppercase tracking-[0.12em] text-white/30">student answer</p>
+                <GradedByTag mode={gradingRow.gradedBy} />
+              </div>
+              <p className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-relaxed text-white/75">
+                {gradingRow.answer || '— no answer submitted —'}
               </p>
             </div>
+            {isSubjectiveType(gradingRow.questionType) && (
+              <AiEvaluationCard
+                response={gradingRow}
+                aiEnabled={aiEnabled}
+                rerunning={aiBusyId === gradingRow.id}
+                onRerun={() => rerunAi(gradingRow)}
+                onAccept={(score) => setGradeValue(String(score))}
+              />
+            )}
             <div>
-              <Label htmlFor="grade-awarded" hint={`max ${grading.maxPoints}`}>Awarded points</Label>
+              <Label htmlFor="grade-awarded" hint={`max ${gradingRow.maxPoints} · half marks allowed`}>
+                Awarded points
+              </Label>
               <Input id="grade-awarded"
                 type="number"
                 min={0}
-                max={grading.maxPoints}
+                step={0.5}
+                max={gradingRow.maxPoints}
                 value={gradeValue}
                 onChange={(e) => setGradeValue(e.target.value)}
               />
             </div>
             <div className="flex gap-2">
-              {[0, Math.round(grading.maxPoints / 2), grading.maxPoints].map((v) => (
+              {[...new Set([0, Math.round(gradingRow.maxPoints / 2), gradingRow.maxPoints])].map((v) => (
                 <Button key={v} size="sm" variant="ghost" onClick={() => setGradeValue(String(v))}>
                   <Check className="h-3 w-3" /> {v} pts
                 </Button>
               ))}
             </div>
+            {gradingRow.ai?.status === 'done' && gradingRow.gradedBy !== 'manual' && (
+              <p className="text-[11px] text-white/35">
+                Saving here overrides the AI score with your own — the AI evaluation stays on record.
+              </p>
+            )}
           </div>
         )}
       </Modal>

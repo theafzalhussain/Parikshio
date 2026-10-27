@@ -9,8 +9,9 @@ import { initMongo, mongoReady } from './mongo';
 import { seedIfEmpty } from './seed';
 import { db, store } from './store';
 import { userFromToken } from './auth';
-import { setIO, examRoom, staffRoom, staffLobby, type AxiomIO } from './realtime';
+import { setIO, examRoom, staffRoom, staffLobby, userRoom, type AxiomIO } from './realtime';
 import { buildExamPublic, getLeaderboard, rearmTimers } from './engine';
+import { resumeAiQueue } from './grading';
 import type { ClientToServerEvents, PublicUser, Role, ServerToClientEvents } from '../shared/types';
 
 /**
@@ -58,6 +59,8 @@ async function main() {
   await initMongo();
   seedIfEmpty();
   rearmTimers();
+  // Evaluations interrupted by a restart pick up where they left off.
+  resumeAiQueue();
 
   const nextApp = next({ dev: !isProd, hostname: '0.0.0.0', port: config.port });
   const handle = nextApp.getRequestHandler();
@@ -119,6 +122,7 @@ async function main() {
     const user = socket.data.user as PublicUser;
     const role: Role = user.role;
     socket.emit('time:sync', { serverTime: Date.now() });
+    socket.join(userRoom(user.id));
     if (role === 'admin') socket.join(staffLobby);
 
     socket.on('join:exam', (payload) => {
@@ -129,10 +133,11 @@ async function main() {
 
       const target = examRoom(exam.code);
       const staff = staffRoom(exam.code);
+      const own = userRoom(user.id);
       // Without this a socket accumulates every exam room it has ever joined and
       // keeps receiving pushes for sessions it has moved on from.
       for (const room of [...socket.rooms]) {
-        if (room !== socket.id && room !== staffLobby && room !== target && room !== staff) {
+        if (room !== socket.id && room !== staffLobby && room !== own && room !== target && room !== staff) {
           socket.leave(room);
         }
       }
@@ -164,6 +169,9 @@ async function main() {
     console.log(`     engine: ${isProd ? 'production' : 'development'}  ·  boot ${Date.now() - t0}ms`);
     console.log(`     mongo:  ${mongoReady() ? 'connected' : 'ephemeral (no MONGODB_URI)'}`);
     console.log(`     redis:  ${cache.stats().status}`);
+    console.log(
+      `     ai:     ${config.gemini.enabled ? `gemini (${config.gemini.models.join(' → ')})${config.gemini.autoGrade ? '' : ' · on demand'}` : 'off (set GEMINI_API_KEY to AI-grade short/long answers)'}`
+    );
     console.log(`     data:   ${store.questions.length} questions · ${store.exams.length} exams · ${store.responses.length} responses\n`);
   });
 

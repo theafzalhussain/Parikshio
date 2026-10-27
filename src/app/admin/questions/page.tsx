@@ -23,7 +23,7 @@ import { GroupLabel, Input, Label, Select, TextArea } from '@/components/ui/Fiel
 import { Loading, TypePill, typeLabel } from '@/components/ui/Pills';
 import { useToast } from '@/components/ui/Toast';
 import { api, ApiError, cx } from '@/lib/api';
-import type { Difficulty, Question, QuestionInput, QuestionType } from '@shared/types';
+import type { Difficulty, GradingStatus, Question, QuestionInput, QuestionType } from '@shared/types';
 
 const TYPES: QuestionType[] = ['mcq', 'truefalse', 'fill', 'short', 'long'];
 
@@ -55,6 +55,7 @@ export default function QuestionBankPage() {
   const [timers, setTimers] = useState<Record<string, number>>({});
   const [paperFilter, setPaperFilter] = useState<'all' | 'manual' | string>('all');
   const [papers, setPapers] = useState<{ id: string; name: string; questionCount: number }[]>([]);
+  const [aiOn, setAiOn] = useState(false);
 
   const load = () =>
     api<{ questions: Question[] }>('/questions')
@@ -75,6 +76,9 @@ export default function QuestionBankPage() {
     api<{ papers: { id: string; name: string; questionCount: number }[] }>('/papers')
       .then((res) => setPapers(res.papers))
       .catch(() => setPapers([]));
+    api<{ grading: GradingStatus }>('/grading/status')
+      .then((res) => setAiOn(res.grading.ai.enabled))
+      .catch(() => setAiOn(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -311,9 +315,13 @@ export default function QuestionBankPage() {
 
                     {needsAnswersForDisplay(q) && (
                       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                        <span className="text-[10.5px] uppercase tracking-[0.12em] text-white/25">accepted</span>
+                        <span className="text-[10.5px] uppercase tracking-[0.12em] text-white/25">
+                          {q.type === 'fill' ? 'accepted' : 'reference'}
+                        </span>
                         {q.acceptedAnswers.length === 0 ? (
-                          <span className="text-[11.5px] text-amber-300/80">manual review</span>
+                          <span className="text-[11.5px] text-amber-300/80">
+                            {aiOn ? 'none · AI grades from the prompt' : 'manual review'}
+                          </span>
                         ) : (
                           q.acceptedAnswers.map((a) => (
                             <span
@@ -432,7 +440,7 @@ export default function QuestionBankPage() {
                     {t === 'truefalse' ? 'True/False' : t === 'mcq' ? 'MCQ' : t === 'fill' ? 'Fill blank' : t === 'short' ? 'Short' : 'Long'}
                   </p>
                   <p className="mt-0.5 text-[9.5px] uppercase tracking-[0.08em] text-white/30">
-                    {t === 'long' ? 'manual' : 'auto'}
+                    {t === 'short' || t === 'long' ? (aiOn ? 'AI graded' : t === 'long' ? 'manual' : 'key') : 'answer key'}
                   </p>
                 </button>
               ))}
@@ -566,16 +574,43 @@ export default function QuestionBankPage() {
 
           {needsAnswers && (
             <div>
-              <Label htmlFor="qf-accepted" hint="one per line · matching is case & typo tolerant">Accepted answers</Label>
+              {form.type === 'fill' ? (
+                <Label htmlFor="qf-accepted" hint="one per line · matching is case & typo tolerant">Accepted answers</Label>
+              ) : (
+                <Label
+                  htmlFor="qf-accepted"
+                  hint={aiOn ? 'one per line · the AI grader marks against these' : 'one per line · case & typo tolerant'}
+                >
+                  {aiOn ? 'Model answer / key points' : 'Accepted answers'}
+                </Label>
+              )}
               <TextArea id="qf-accepted"
-                rows={form.type === 'long' ? 2 : 3}
+                rows={form.type === 'long' ? 4 : 3}
                 value={answersText}
                 onChange={(e) => setAnswersText(e.target.value)}
-                placeholder={form.type === 'long' ? 'Leave empty to send every response for manual review' : 'azimuthal\nangular momentum'}
+                placeholder={
+                  form.type === 'fill'
+                    ? 'azimuthal\nangular momentum'
+                    : aiOn
+                      ? form.type === 'long'
+                        ? 'States the classical energy relation E = p²/2m + V\nSubstitutes p → −iħ∇ and E → iħ∂/∂t\nSeparates variables to reach Hψ = Eψ'
+                        : 'probability amplitude of finding the particle'
+                      : form.type === 'long'
+                        ? 'Leave empty to send every response for manual review'
+                        : 'azimuthal\nangular momentum'
+                }
               />
               {form.type === 'long' && !answersText.trim() && (
                 <p className="mt-1.5 text-[11px] text-amber-300/80">
-                  Long answers without keys are queued for manual scoring — that is the expected behaviour.
+                  {aiOn
+                    ? 'No reference yet — the AI grader will mark from the question alone. Adding key points makes scoring more consistent.'
+                    : 'Long answers without keys are queued for manual scoring — that is the expected behaviour.'}
+                </p>
+              )}
+              {form.type === 'short' && aiOn && (
+                <p className="mt-1.5 text-[11px] text-white/35">
+                  Short answers are scored by the AI evaluator (partial credit allowed). An exact match to a key still
+                  earns full marks if the AI is unavailable.
                 </p>
               )}
             </div>

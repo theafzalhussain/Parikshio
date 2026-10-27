@@ -7,19 +7,23 @@ import {
   ArrowLeft,
   Check,
   CircleCheck,
+  CloudUpload,
   Hourglass,
   Lock,
   Radio,
+  RefreshCw,
   Send,
   Sparkles,
   Timer,
   Trophy,
   Wifi,
+  WifiOff,
   Zap
 } from 'lucide-react';
 import { StudentShell } from '@/components/StudentShell';
 import { RadialTimer } from '@/components/charts/Charts';
 import { Leaderboard } from '@/components/Leaderboard';
+import { OfflineQueuePanel } from '@/components/OfflineQueuePanel';
 import { Badge, Panel, SectionHead } from '@/components/ui/Panel';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Input, TextArea } from '@/components/ui/Field';
@@ -27,8 +31,19 @@ import { Loading, TypePill, typeLabel } from '@/components/ui/Pills';
 import { useToast } from '@/components/ui/Toast';
 import { api, ApiError, cx } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import {
+  clearAnswerDraft,
+  enqueueAnswer,
+  flushOutbox,
+  isTransportFailure,
+  onSyncOutcome,
+  readAnswerDraft,
+  saveAnswerDraft,
+  type AnswerReceipt
+} from '@/lib/offlineQueue';
+import { useOutbox } from '@/lib/useOutbox';
 import { useServerClock, useSocket } from '@/lib/socket';
-import type { ExamPublic, LeaderboardEntry, StudentQuestion } from '@shared/types';
+import type { ExamPublic, Grade, LeaderboardEntry, StudentQuestion } from '@shared/types';
 
 const fmtClock = (ms: number) => {
   const total = Math.max(0, Math.ceil(ms / 1000));
@@ -43,6 +58,7 @@ export default function StudentExamPage() {
   const socket = useSocket();
   const { now, synced } = useServerClock(socket);
   const { push } = useToast();
+  const outbox = useOutbox(user?.id ?? null);
 
   const [exam, setExam] = useState<ExamPublic | null>(null);
   const [board, setBoard] = useState<LeaderboardEntry[]>([]);
@@ -68,7 +84,12 @@ export default function StudentExamPage() {
 
   // realtime
   useEffect(() => {
-    socket.emit('join:exam', { examCode: code, role: 'student' });
+    // Socket.io rooms do not survive a reconnect: a device that drops off long
+    // enough to get a new connection must join the exam room again, or it
+    // silently stops receiving pushes, locks and leaderboard updates.
+    const join = () => socket.emit('join:exam', { examCode: code, role: 'student' });
+    if (socket.connected) join();
+    socket.on('connect', join);
 
     const onState = (payload: ExamPublic) => {
       if (payload.code !== code) return;
@@ -88,18 +109,33 @@ export default function StudentExamPage() {
     };
     const onEnded = () => void load();
     const onBoard = (payload: { entries: LeaderboardEntry[] }) => setBoard(payload.entries);
+    // A short/long answer scored by the AI (or a teacher) after the question closed.
+    const onAnswerGraded = (payload: { examId: string; questionId: string; grade: Grade; awarded: number }) => {
+      setExam((prev) => {
+        if (!prev || prev.id !== payload.examId) return prev;
+        const mine = prev.myAnswers[payload.questionId];
+        if (!mine) return prev;
+        return {
+          ...prev,
+          myAnswers: { ...prev.myAnswers, [payload.questionId]: { ...mine, grade: payload.grade, awarded: payload.awarded } }
+        };
+      });
+    };
 
     socket.on('exam:state', onState);
     socket.on('question:pushed', onPushed);
     socket.on('question:locked', onLocked);
     socket.on('exam:ended', onEnded);
     socket.on('leaderboard:update', onBoard);
+    socket.on('answer:graded', onAnswerGraded);
     return () => {
+      socket.off('connect', join);
       socket.off('exam:state', onState);
       socket.off('question:pushed', onPushed);
       socket.off('question:locked', onLocked);
       socket.off('exam:ended', onEnded);
       socket.off('leaderboard:update', onBoard);
+      socket.off('answer:graded', onAnswerGraded);
     };
   }, [socket, code, load, push]);
 
@@ -112,6 +148,60 @@ export default function StudentExamPage() {
   const myAnswer = active ? exam?.myAnswers[active.questionId] : undefined;
   const answered = !!myAnswer;
   const expired = !!active && (active.locked || remaining <= 0);
+  /** This answer is sitting in the device's outbox, waiting for the network. */
+  const queued = useMemo(
+    () =>
+      exam && active
+        ? outbox.pending.find((row) => row.examId === exam.id && row.questionId === active.questionId) ?? null
+        : null,
+    [outbox.pending, exam, active]
+  );
+  /** Already committed, one way or another — the inputs must stay locked. */
+  const committed = answered || !!queued;
+
+  // A reconnect is the moment to both drain the outbox and re-read the room:
+  // questions may have been pushed and locked while this device was dark.
+  useEffect(() => {
+    const onConnect = () => {
+      void load();
+      void flushOutbox('socket-reconnect');
+    };
+    socket.on('connect', onConnect);
+    window.addEventListener('online', onConnect);
+    return () => {
+      socket.off('connect', onConnect);
+      window.removeEventListener('online', onConnect);
+    };
+  }, [socket, load]);
+
+  // Report what the outbox managed to deliver (or failed to) while the student
+  // was looking at a later question.
+  useEffect(() => {
+    return onSyncOutcome((outcome) => {
+      if (outcome.status === 'synced') {
+        if (outcome.receipt.exam.id === exam?.id) {
+          setExam(outcome.receipt.exam);
+          setBoard(outcome.receipt.leaderboard);
+        }
+        push({
+          kind: 'success',
+          title: `Question ${outcome.record.questionIndex} delivered`,
+          body: 'The answer saved on this device reached the server and has been recorded.'
+        });
+        return;
+      }
+      if (outcome.status === 'duplicate') {
+        void load();
+        return;
+      }
+      push({
+        kind: 'error',
+        title: `Question ${outcome.record.questionIndex} could not be delivered`,
+        body: outcome.message
+      });
+      void load();
+    });
+  }, [exam?.id, load, push]);
 
   // reset draft when a new question arrives
   useEffect(() => {
@@ -122,42 +212,98 @@ export default function StudentExamPage() {
     }
   }, [question]);
 
+  // Restore whatever was typed before a reload or a crash. Runs after the reset
+  // above, so a recovered draft wins over the blank slate.
+  useEffect(() => {
+    const studentId = user?.id;
+    const examId = exam?.id;
+    const questionId = question?.id;
+    if (!studentId || !examId || !questionId) return;
+    let cancelled = false;
+    void readAnswerDraft(studentId, examId, questionId).then((saved) => {
+      if (cancelled || !saved) return;
+      setDraft((current) => (current.length > 0 ? current : saved));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, exam?.id, question?.id]);
+
+  // Persist the draft as it is typed, debounced so storage is not hammered on
+  // every keystroke of a long answer.
+  useEffect(() => {
+    const studentId = user?.id;
+    const examId = exam?.id;
+    const questionId = question?.id;
+    if (!studentId || !examId || !questionId || committed || !draft) return;
+    const timer = window.setTimeout(() => {
+      void saveAnswerDraft({ studentId, examId, questionId, answer: draft });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [draft, user?.id, exam?.id, question?.id, committed]);
+
   // 10-second warning
   useEffect(() => {
-    if (!active || answered || active.locked) return;
+    if (!active || committed || active.locked) return;
     if (secondsLeft <= 10 && secondsLeft > 0 && warned.current !== active.questionId) {
       warned.current = active.questionId;
       push({ kind: 'warn', title: '10 seconds left', body: 'Submit your answer now.' });
     }
-  }, [secondsLeft, active, answered, push]);
+  }, [secondsLeft, active, committed, push]);
 
   const canSubmit = useMemo(() => {
-    if (!question || answered || expired) return false;
+    if (!question || committed || expired) return false;
     if (question.type === 'mcq' || question.type === 'truefalse' || question.type === 'fill') return draft.trim().length > 0;
     return draft.trim().length > 1;
-  }, [question, answered, expired, draft]);
+  }, [question, committed, expired, draft]);
 
   async function submit() {
-    if (!exam || !question || !canSubmit) return;
+    if (!exam || !question || !active || !canSubmit || !user) return;
+    const value = question.type === 'mcq' || question.type === 'truefalse' ? draft : draft.trim();
+    // Stamped from the server-synced clock, not `Date.now()`, so an answer the
+    // outbox replays later is still timed by when the student committed it.
+    const committedAt = now;
     setSubmitting(true);
     try {
-      const payload =
-        question.type === 'mcq' || question.type === 'truefalse' ? draft : draft.trim();
-      const res = await api<{ exam: ExamPublic; leaderboard: LeaderboardEntry[]; response: { latencyMs: number } }>(
-        '/student/answers',
-        { method: 'POST', body: { examId: exam.id, questionId: question.id, answer: payload } }
-      );
+      const res = await api<AnswerReceipt>('/student/answers', {
+        method: 'POST',
+        body: { examId: exam.id, questionId: question.id, answer: value, clientSubmittedAt: committedAt }
+      });
       setExam(res.exam);
       setBoard(res.leaderboard);
+      void clearAnswerDraft(user.id, exam.id, question.id);
       push({
         kind: 'success',
         title: 'Answer locked in',
         body: `Recorded in ${(res.response.latencyMs / 1000).toFixed(1)}s. Result unlocks when the question closes.`
       });
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Could not submit';
-      push({ kind: 'error', title: 'Submission rejected', body: message });
-      await load();
+      // The request never reached the server (no network, or the server is
+      // momentarily unreachable) — hand the answer to the outbox instead of
+      // losing it, and let the student carry on.
+      if (isTransportFailure(err)) {
+        await enqueueAnswer({
+          studentId: user.id,
+          examId: exam.id,
+          examCode: exam.code,
+          questionId: question.id,
+          questionIndex: active.index,
+          prompt: question.prompt,
+          answer: value,
+          clientSubmittedAt: committedAt,
+          pushedAt: active.pushedAt,
+          endsAt: active.endsAt
+        });
+        push({
+          kind: 'warn',
+          title: 'Saved on this device',
+          body: 'No connection right now. Your answer is stored locally and will be submitted automatically as soon as you are back online.'
+        });
+      } else {
+        const message = err instanceof ApiError ? err.message : 'Could not submit';
+        push({ kind: 'error', title: 'Submission rejected', body: message });
+        await load();
+      }
     } finally {
       setSubmitting(false);
     }
@@ -168,17 +314,35 @@ export default function StudentExamPage() {
   /* ── states ─────────────────────────────────────────────── */
 
   if (error) {
+    const offline = !outbox.online;
     return (
       <StudentShell>
         <Panel className="mx-auto max-w-md p-8 text-center">
-          <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-ember-500/10 text-ember-400">
-            <Lock className="h-5 w-5" />
+          <span
+            className={cx(
+              'mx-auto grid h-12 w-12 place-items-center rounded-2xl',
+              offline ? 'bg-amber-400/10 text-amber-300' : 'bg-ember-500/10 text-ember-400'
+            )}
+          >
+            {offline ? <WifiOff className="h-5 w-5" /> : <Lock className="h-5 w-5" />}
           </span>
-          <h1 className="mt-4 text-[16px] font-semibold text-white">This exam is not accessible</h1>
-          <p className="mt-1.5 text-[12.5px] leading-relaxed text-white/45">{error}</p>
-          <LinkButton href="/student" variant="lime" size="sm" className="mt-5">
-            Back to lobby
-          </LinkButton>
+          <h1 className="mt-4 text-[16px] font-semibold text-white">
+            {offline ? 'No connection' : 'This exam is not accessible'}
+          </h1>
+          <p className="mt-1.5 text-[12.5px] leading-relaxed text-white/45">
+            {offline
+              ? 'This device is offline, so the exam room could not be opened. It will load by itself the moment you are back online.'
+              : error}
+          </p>
+          <div className="mt-5 flex flex-wrap justify-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => void load()}>
+              <RefreshCw className="h-3.5 w-3.5" /> Try again
+            </Button>
+            <LinkButton href="/student" variant="lime" size="sm">
+              Back to lobby
+            </LinkButton>
+          </div>
+          {outbox.pending.length > 0 && <OfflineQueuePanel outbox={outbox} className="mt-5 text-left" />}
         </Panel>
       </StudentShell>
     );
@@ -211,6 +375,8 @@ export default function StudentExamPage() {
             <Badge tone="neutral">session ended</Badge>
           </div>
 
+          <OfflineQueuePanel outbox={outbox} />
+
           <Panel className="relative overflow-hidden p-7 text-center sm:p-9">
             <div className="absolute -top-16 left-1/2 h-48 w-48 -translate-x-1/2 rounded-full bg-lime-400/15 blur-3xl" />
             <span className="relative mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-lime-400/15 text-lime-300 ring-1 ring-inset ring-lime-400/30">
@@ -236,7 +402,7 @@ export default function StudentExamPage() {
 
             {pending > 0 && (
               <p className="relative mt-4 text-[11.5px] text-amber-300/80">
-                {pending} long-form answer{pending > 1 ? 's are' : ' is'} awaiting manual review.
+                {pending} written answer{pending > 1 ? 's are' : ' is'} still being reviewed — your score updates automatically.
               </p>
             )}
 
@@ -271,9 +437,19 @@ export default function StudentExamPage() {
               <ArrowLeft className="h-3.5 w-3.5" /> Leave room
             </Link>
             <span className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-[0.14em] text-white/35">
-              <Wifi className="h-3 w-3 text-mint-400" /> connected · {synced ? 'clock synced' : 'syncing'}
+              {outbox.online ? (
+                <>
+                  <Wifi className="h-3 w-3 text-mint-400" /> connected · {synced ? 'clock synced' : 'syncing'}
+                </>
+              ) : (
+                <>
+                  <WifiOff className="h-3 w-3 text-ember-500" /> offline · answers saved locally
+                </>
+              )}
             </span>
           </div>
+
+          <OfflineQueuePanel outbox={outbox} />
 
           <Panel className="relative overflow-hidden p-8 text-center sm:p-12">
             <div className="absolute inset-0 dot-veil opacity-30" />
@@ -332,6 +508,8 @@ export default function StudentExamPage() {
             </div>
           </div>
         </div>
+
+        <OfflineQueuePanel outbox={outbox} />
 
         <div className="grid gap-4 lg:grid-cols-[1.55fr_1fr]">
           {/* question column */}
@@ -394,14 +572,14 @@ export default function StudentExamPage() {
                           <button
                             key={`${question!.id}-opt-${i}`}
                             type="button"
-                            disabled={answered || expired}
+                            disabled={committed || expired}
                             onClick={() => setDraft(String(i))}
                             className={cx(
                               'group flex w-full items-center gap-3 rounded-2xl border px-4 py-3.5 text-left transition',
                               selected
                                 ? 'border-aurora-400/60 bg-aurora-500/[0.12] shadow-[0_0_0_1px_rgba(158,130,255,0.25),0_10px_30px_-20px_rgba(124,92,255,0.9)]'
                                 : 'border-white/[0.08] bg-white/[0.02] hover:border-white/25 hover:bg-white/[0.04]',
-                              (answered || expired) && !selected && 'opacity-45'
+                              (committed || expired) && !selected && 'opacity-45'
                             )}
                           >
                             <span
@@ -425,7 +603,7 @@ export default function StudentExamPage() {
                     <Input
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
-                      disabled={answered || expired}
+                      disabled={committed || expired}
                       placeholder="Type the missing word or value…"
                       className="py-3.5 text-[15px]"
                       autoFocus
@@ -437,7 +615,7 @@ export default function StudentExamPage() {
                       rows={3}
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
-                      disabled={answered || expired}
+                      disabled={committed || expired}
                       placeholder="Answer in one or two sentences…"
                       className="text-[14px]"
                       autoFocus
@@ -450,7 +628,7 @@ export default function StudentExamPage() {
                         rows={9}
                         value={draft}
                         onChange={(e) => setDraft(e.target.value)}
-                        disabled={answered || expired}
+                        disabled={committed || expired}
                         placeholder="Write your full answer. Show each step — this one is reviewed by your faculty."
                         className="text-[14px] leading-relaxed"
                         autoFocus
@@ -472,6 +650,19 @@ export default function StudentExamPage() {
                         Answer recorded. Result unlocks when the question closes.
                       </p>
                     </div>
+                  ) : queued ? (
+                    <div className="flex flex-1 items-center gap-2.5 rounded-xl border border-amber-400/25 bg-amber-400/[0.08] px-3.5 py-3">
+                      {outbox.syncing ? (
+                        <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-amber-300" />
+                      ) : (
+                        <CloudUpload className="h-4 w-4 shrink-0 text-amber-300" />
+                      )}
+                      <p className="text-[12.5px] text-amber-100">
+                        Saved on this device with {fmtClock(Math.max(0, queued.endsAt - queued.clientSubmittedAt))} on
+                        the clock.
+                        {outbox.syncing ? ' Delivering now…' : ' It will be submitted the moment you reconnect.'}
+                      </p>
+                    </div>
                   ) : expired ? (
                     <div className="flex flex-1 items-center gap-2.5 rounded-xl border border-ember-500/25 bg-ember-500/[0.08] px-3.5 py-3">
                       <Lock className="h-4 w-4 shrink-0 text-ember-400" />
@@ -482,10 +673,13 @@ export default function StudentExamPage() {
                   ) : (
                     <>
                       <p className="text-[11px] text-white/30">
-                        One submission per question · graded automatically for objective answers
+                        {outbox.online
+                          ? 'One submission per question · graded automatically for objective answers'
+                          : 'Offline — your answer is saved on this device and sent automatically'}
                       </p>
                       <Button variant="lime" size="lg" onClick={submit} loading={submitting} disabled={!canSubmit}>
-                        <Send className="h-4 w-4" /> Submit answer
+                        {outbox.online ? <Send className="h-4 w-4" /> : <CloudUpload className="h-4 w-4" />}
+                        {outbox.online ? 'Submit answer' : 'Save answer'}
                       </Button>
                     </>
                   )}
@@ -510,6 +704,22 @@ export default function StudentExamPage() {
                     <Hourglass className="h-3 w-3" /> awaiting result
                   </Badge>
                 )}
+              </Panel>
+            )}
+
+            {!answered && queued && (
+              <Panel className="flex flex-wrap items-center justify-between gap-3 p-4">
+                <div className="min-w-0">
+                  <p className="text-[10.5px] uppercase tracking-[0.14em] text-white/30">held on this device</p>
+                  <p className="mt-1 max-h-16 overflow-hidden text-[12.5px] leading-relaxed text-white/70">
+                    {isObjective
+                      ? `Option ${String.fromCharCode(65 + Number(queued.answer))} — ${question!.options[Number(queued.answer)] ?? ''}`
+                      : queued.answer}
+                  </p>
+                </div>
+                <Badge tone="amber">
+                  <CloudUpload className="h-3 w-3" /> pending sync
+                </Badge>
               </Panel>
             )}
           </div>
@@ -549,10 +759,18 @@ export default function StudentExamPage() {
             </Panel>
 
             <Panel className="p-4">
-              <p className="flex items-center gap-2 text-[11px] text-white/35">
-                <Wifi className="h-3.5 w-3.5 text-mint-400" />
-                Keep this tab in focus. Submissions close automatically when the timer ends.
-              </p>
+              {outbox.online ? (
+                <p className="flex items-center gap-2 text-[11px] text-white/35">
+                  <Wifi className="h-3.5 w-3.5 text-mint-400" />
+                  Keep this tab in focus. Submissions close automatically when the timer ends.
+                </p>
+              ) : (
+                <p className="flex items-start gap-2 text-[11px] text-amber-300/70">
+                  <WifiOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  You are disconnected. Answer anyway — it is saved on this device and delivered automatically when the
+                  network returns.
+                </p>
+              )}
             </Panel>
           </div>
         </div>

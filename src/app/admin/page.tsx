@@ -35,6 +35,7 @@ interface OverviewResponse {
     responses: number;
     accuracy: number;
     pendingReviews: number;
+    aiGraded?: number;
   };
   byType: { type: QuestionType; count: number }[];
   exams: AdminExamRow[];
@@ -115,7 +116,7 @@ export default function AdminOverview() {
             <Stat
               label="Cohort accuracy"
               value={`${data.stats.accuracy}%`}
-              hint={`${data.stats.pendingReviews} awaiting manual review`}
+              hint={`${data.stats.pendingReviews} awaiting review · ${data.stats.aiGraded ?? 0} AI-graded`}
               tone="sky"
               icon={<Target className="h-3.5 w-3.5" />}
             />

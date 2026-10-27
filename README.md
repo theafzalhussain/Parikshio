@@ -84,8 +84,9 @@ analyse workflow:
 | Synchronised live timer | Server-authoritative `endsAt`; `time:sync` broadcast every 10 s → client offset correction (`useServerClock`) |
 | Intuitive answer inputs | Option buttons (MCQ/T-F), single-line input (fill), textarea (short/long) |
 | Real-time capture + timestamp + ranking | `submitAnswer()` stores `submittedAt` + `latencyMs`; `rankResponses()` ranks by points → correct count → average latency |
-| Automated grading (objective) | `gradeAnswer()` in `shared/grade.ts` — index match for MCQ/T-F, normalised + typo-tolerant matching for fill/short |
-| Manual review for long answers | Responses without keys land as `pending`; one-tap scoring in the control room (`POST /api/responses/:id/grade`) |
+| Automated grading (objective) | `gradeAnswer()` in `shared/grade.ts` — index match for MCQ/T-F, normalised + typo-tolerant matching for fill |
+| **AI grading (subjective)** | `server/grading.ts` + `server/gemini.ts` — Short/Long answers are queued on submission, batched per question (10 answers per Gemini request, each scored independently), scored against the model answer / key points (partial credit, feedback, confidence), and pushed to the control room over `response:graded`. Rate limits are waited out; a used-up daily quota is reported to the teacher instead of failing silently |
+| Manual review / override | Any score can be overridden in the control room (`POST /api/responses/:id/grade`); low-confidence or manipulative AI results are flagged for review |
 | Institute analytics | `analytics()` + `/admin/analytics/[id]` — accuracy, completion, avg score, per-question diagnostics, option distribution, latency histogram, format strength, CSV export |
 | **Paper upload → question extraction** | `POST /api/papers/upload` (PDF / DOCX / image / text) → `server/files.ts` (pdfjs line rebuild, mammoth, Tesseract OCR) → `server/extract.ts` (parser) → every question stored with `sourcePaperId` |
 | **Per-question controls in the panel** | Each row carries inline **timer**, **Push**, **Edit**, **Delete** — on the paper workbench (`/admin/papers/[id]`) and in the question bank |
@@ -160,6 +161,10 @@ GET    /api/exams                POST /api/exams
 GET    /api/exams/:id            POST /api/exams/:id/push | /lock | /end
 GET    /api/exams/:id/analytics  GET /api/exams/:id/leaderboard
 POST   /api/responses/:id/grade
+GET    /api/grading/status                 dual-mode engine + AI queue state       (admin)
+POST   /api/grading/evaluate               AI dry run: { questionId | question, answer } (admin)
+POST   /api/responses/:id/ai-grade         (re-)run AI evaluation for one response  (admin)
+POST   /api/exams/:id/ai-grade             { scope: 'pending' | 'all' } bulk AI      (admin)
 GET    /api/student/exams | /student/history
 POST   /api/student/join         POST /api/student/answers
 GET    /api/student/exams/:id | /student/exams/by-code/:code

@@ -33,10 +33,32 @@ function editDistance(a: string, b: string): number {
 }
 
 /**
+ * Dual-mode grading split.
+ * Objective formats have one right answer, so a deterministic answer key grades
+ * them instantly. Subjective formats need judgement and go to the AI evaluator
+ * (falling back to manual review when AI is unavailable).
+ */
+export const OBJECTIVE_TYPES: readonly QuestionType[] = ['mcq', 'truefalse', 'fill'];
+export const SUBJECTIVE_TYPES: readonly QuestionType[] = ['short', 'long'];
+
+export function isSubjective(type: QuestionType): boolean {
+  return type === 'short' || type === 'long';
+}
+
+/**
+ * Any partial credit counts as graded-correct (the UI renders it as "partial");
+ * zero is incorrect. Shared by manual and AI scoring so both read the same way.
+ */
+export function gradeForAward(awarded: number): Grade {
+  return awarded > 0 ? 'correct' : 'incorrect';
+}
+
+/**
  * Automated grading.
  * - mcq / truefalse → option index comparison (answer is the option index as string)
  * - fill / short    → normalised match against accepted answers (typo tolerant ≤ 1 edit for words > 4 chars)
  * - long            → pending manual review (automatically matched only if an accepted answer exists)
+ * - short / long without any key → pending (the AI evaluator or a human scores them)
  */
 export function gradeAnswer(
   question: Question,
@@ -56,7 +78,9 @@ export function gradeAnswer(
     return { grade: isCorrect ? 'correct' : 'incorrect', awarded: isCorrect ? worth : 0 };
   }
 
-  if (question.type === 'long' && question.acceptedAnswers.length === 0) {
+  // Without a key there is nothing to compare against — marking every answer
+  // wrong would be worse than asking for a human (or AI) judgement.
+  if (isSubjective(question.type) && question.acceptedAnswers.length === 0) {
     return { grade: 'pending', awarded: 0 };
   }
 

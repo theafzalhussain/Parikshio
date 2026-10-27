@@ -272,12 +272,21 @@ export function QuestionEditModal({
 
         {needsAnswers && (
           <div>
-            <Label htmlFor="qe-accepted" hint="one per line · typo tolerant">Accepted answers</Label>
+            <Label
+              htmlFor="qe-accepted"
+              hint={form.type === 'fill' ? 'one per line · typo tolerant' : 'one per line · used as the AI marking reference'}
+            >
+              {form.type === 'fill' ? 'Accepted answers' : 'Model answer / key points'}
+            </Label>
             <TextArea id="qe-accepted"
-              rows={3}
+              rows={form.type === 'long' ? 4 : 3}
               value={answers}
               onChange={(e) => setAnswers(e.target.value)}
-              placeholder={form.type === 'long' ? 'Leave empty for manual review' : 'azimuthal\nangular momentum'}
+              placeholder={
+                form.type === 'long'
+                  ? 'One key point per line — empty means AI marks from the prompt (or manual review if AI is off)'
+                  : 'azimuthal\nangular momentum'
+              }
             />
           </div>
         )}
