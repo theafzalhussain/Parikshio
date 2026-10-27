@@ -15,6 +15,7 @@ import {
   type AuthedRequest
 } from './auth';
 import { verifyFirebaseIdToken } from './firebase';
+import { sendPasswordResetEmail, emailEnabled } from './email';
 import { config, isProd } from './config';
 import {
   clientIp,
@@ -250,7 +251,7 @@ api.post('/auth/google', googleLimiter, asyncRoute(async (req, res) => {
 }));
 
 /** Step 1 of password recovery — issues a single-use, 30-minute token. */
-api.post('/auth/forgot-password', forgotPasswordLimiter, forgotPasswordEmailLimiter, (req, res) => {
+api.post('/auth/forgot-password', forgotPasswordLimiter, forgotPasswordEmailLimiter, asyncRoute(async (req, res) => {
   const email = sanitiseEmail(req.body?.email);
   const ip = clientIp(req);
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
@@ -290,14 +291,46 @@ api.post('/auth/forgot-password', forgotPasswordLimiter, forgotPasswordEmailLimi
 
   const link = `/reset-password?token=${token}&email=${encodeURIComponent(user.email)}`;
 
-  // No email transport is wired up yet. Until one is, surface the link in dev
-  // so the flow is usable end-to-end; in production it is never returned.
-  if (!isProd) {
-    console.log(`\n  🔑 Password reset link for ${user.email}:\n     http://localhost:${config.port}${link}\n`);
+  // Build an absolute URL for the email. Prefer the configured APP_URL; fall
+  // back to the request's own origin so it works even if APP_URL is unset.
+  const origin =
+    config.appBaseUrl ||
+    `${(req.headers['x-forwarded-proto'] as string) || req.protocol}://${req.get('host') ?? `localhost:${config.port}`}`;
+  const resetUrl = `${origin}${link}`;
+
+  // Deliver the link by email when Brevo is configured (dev or prod).
+  if (emailEnabled()) {
+    const result = await sendPasswordResetEmail(user.email, user.name, resetUrl);
+    if (result.ok) {
+      recordAudit({
+        action: 'auth.forgot_email_sent',
+        actorId: user.id,
+        actorName: user.name,
+        detail: 'reset link emailed via brevo',
+        ip
+      });
+    } else {
+      // Never fail the request (that would reveal account existence / block the
+      // user); log the reason so a misconfigured key is diagnosable.
+      console.warn(`[email] password-reset send failed for ${user.email}: ${result.error}`);
+      recordAudit({
+        action: 'auth.forgot_email_failed',
+        actorId: user.id,
+        actorName: user.name,
+        detail: `brevo send failed: ${result.error ?? 'unknown'}`,
+        ip
+      });
+    }
+  }
+
+  // Without an email transport configured, surface the link in dev so the flow
+  // stays usable end-to-end; in production it is never returned.
+  if (!isProd && !emailEnabled()) {
+    console.log(`\n  🔑 Password reset link for ${user.email}:\n     ${resetUrl}\n`);
     return res.json({ ok: true, message: RESET_SENT_MESSAGE, devLink: link });
   }
   return res.json({ ok: true, message: RESET_SENT_MESSAGE });
-});
+}));
 
 /** Step 2 — consumes the token and sets the new password. */
 api.post('/auth/reset-password', resetPasswordLimiter, (req, res) => {

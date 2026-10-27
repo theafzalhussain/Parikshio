@@ -62,6 +62,24 @@ export const config = {
     projectId: firebaseProjectId,
     enabled: firebaseProjectId.length > 0
   },
+  /**
+   * Absolute base URL used to build links inside emails (password reset, etc).
+   * In production set APP_URL to the deployed origin, e.g.
+   * https://parikshio.onrender.com — otherwise reset links point at localhost.
+   */
+  appBaseUrl: (process.env.APP_URL ?? '').trim().replace(/\/+$/, ''),
+  /**
+   * Brevo (transactional email). Only used to deliver the password-reset link.
+   * Email sending is enabled only when BREVO_API_KEY and a sender address are set.
+   */
+  brevo: {
+    apiKey: (process.env.BREVO_API_KEY ?? '').trim(),
+    senderEmail: (process.env.BREVO_SENDER_EMAIL ?? '').trim(),
+    senderName: (process.env.BREVO_SENDER_NAME ?? 'Parikshio').trim(),
+    get enabled() {
+      return this.apiKey.length > 0 && this.senderEmail.length > 0;
+    }
+  },
   /** Password-reset link lifetime (ms). */
   passwordResetTtlMs: 30 * 60 * 1000
 };
