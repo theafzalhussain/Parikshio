@@ -1,0 +1,35 @@
+# dependencies
+node_modules
+
+# next.js build output
+.next
+.next-prod
+out
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# secrets — never commit these
+.env
+.env.local
+.env.*.local
+.env.production
+*.pem
+*.key
+serviceAccount*.json
+firebase-adminsdk*.json
+
+# uploads / local storage
+/storage
+/uploads
+
+# logs
+*.log
+boot-out.log
+boot-err.log
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea

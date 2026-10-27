@@ -1,0 +1,32 @@
+version: '3.9'
+
+# Optional infrastructure for Axiom Live.
+#   docker compose up -d
+# then set in .env:
+#   MONGODB_URI=mongodb://127.0.0.1:27017/axiom_live
+#   REDIS_URL=redis://127.0.0.1:6379
+# Without them the app still runs (in-memory engine + cache).
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: axiom-mongo
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - axiom-mongo:/data/db
+
+  redis:
+    image: redis:7-alpine
+    container_name: axiom-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'allkeys-lru']
+    ports:
+      - '6379:6379'
+    volumes:
+      - axiom-redis:/data
+
+volumes:
+  axiom-mongo:
+  axiom-redis:

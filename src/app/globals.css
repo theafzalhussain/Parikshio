@@ -1,0 +1,216 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --ink: #05060a;
+  /* Shared easing so every transition in the app decelerates the same way. */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* Sticky headers must not cover the target of an in-page anchor. */
+  scroll-padding-top: 5.5rem;
+}
+
+body {
+  background: var(--ink);
+  color: #eceef7;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+  /* Inter's refined alternates: straighter l, open 6/9, single-storey a. */
+  font-feature-settings: 'cv02' 1, 'cv03' 1, 'cv04' 1, 'liga' 1, 'calt' 1;
+}
+
+/* Headings read better when the last line is not a single orphan word. */
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+::selection {
+  background: rgba(203, 255, 61, 0.85);
+  color: #0a0b12;
+}
+
+/* thin, quiet scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: content-box;
+}
+/* Firefox has no ::-webkit-scrollbar; this is its equivalent. */
+@supports (scrollbar-width: thin) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-3xl border border-white/[0.07] bg-white/[0.025] shadow-card backdrop-blur-xl;
+  }
+  .panel-tight {
+    @apply rounded-2xl border border-white/[0.07] bg-white/[0.03];
+  }
+  .grid-veil {
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 10%, transparent 75%);
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 10%, transparent 75%);
+  }
+  .dot-veil {
+    background-image: radial-gradient(rgba(255, 255, 255, 0.16) 1px, transparent 1px);
+    background-size: 22px 22px;
+    mask-image: radial-gradient(ellipse 60% 50% at 50% 50%, black, transparent 70%);
+    -webkit-mask-image: radial-gradient(ellipse 60% 50% at 50% 50%, black, transparent 70%);
+  }
+
+  /**
+   * Ambient colour wash. A painted radial gradient costs a fraction of a
+   * `filter: blur(120px)` on a 34rem box, which the GPU has to rasterise and
+   * re-composite on every scroll frame.
+   */
+  .aura {
+    position: absolute;
+    border-radius: 9999px;
+    pointer-events: none;
+  }
+  .aura-violet {
+    background: radial-gradient(closest-side, rgba(99, 56, 245, 0.3), rgba(99, 56, 245, 0.09) 55%, transparent 78%);
+  }
+  .aura-mint {
+    background: radial-gradient(closest-side, rgba(34, 214, 155, 0.2), rgba(34, 214, 155, 0.06) 55%, transparent 78%);
+  }
+  .aura-lime {
+    background: radial-gradient(closest-side, rgba(203, 255, 61, 0.16), rgba(203, 255, 61, 0.05) 55%, transparent 78%);
+  }
+
+  .sheen {
+    position: relative;
+    overflow: hidden;
+  }
+  /**
+   * Transform-based so the sweep runs on the compositor. Animating
+   * `background-position` repainted the element on every frame.
+   */
+  .sheen::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 60%;
+    background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.14), transparent);
+    animation: sweep 4.5s var(--ease-out-soft) infinite;
+    pointer-events: none;
+    opacity: 0.35;
+    will-change: transform;
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+    letter-spacing: -0.02em;
+  }
+  .eyebrow {
+    @apply text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45;
+  }
+  .hairline {
+    @apply border-t border-white/[0.07];
+  }
+  .focus-ring {
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-aurora-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950;
+  }
+  .gradient-text {
+    background: linear-gradient(100deg, #ffffff 10%, #bca6ff 48%, #cbff3d 96%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .input-base {
+    @apply w-full rounded-xl border border-white/10 bg-ink-900/70 px-3.5 py-2.5 text-sm text-white/90 placeholder-white/30 transition
+      hover:border-white/20 focus:border-aurora-400/60 focus:outline-none focus:ring-4 focus:ring-aurora-500/10;
+  }
+
+  /** Keyboard-only escape hatch past the header. */
+  .skip-link {
+    @apply pointer-events-none fixed left-4 top-4 z-[200] -translate-y-24 rounded-xl border border-aurora-400/40 bg-ink-900 px-4 py-2.5
+      text-[13px] font-medium text-white opacity-0 transition duration-200;
+  }
+  .skip-link:focus-visible {
+    @apply pointer-events-auto translate-y-0 opacity-100 outline-none ring-2 ring-aurora-400/70;
+  }
+
+  /**
+   * Skips layout+paint for sections still below the fold. The intrinsic size
+   * keeps the scrollbar honest so nothing jumps as you scroll in.
+   */
+  .defer-paint {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 600px;
+  }
+}
+
+@layer utilities {
+  /* Fades a scrollable row at its edges instead of cutting content dead. */
+  .edge-fade-x {
+    mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
+    -webkit-mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
+  }
+}
+
+@keyframes sweep {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
