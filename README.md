@@ -211,6 +211,32 @@ Google's OAuth consent configuration and Classroom access policies determine whi
 * Split hosting (Vercel UI + Render API) is supported. Set `NEXT_PUBLIC_API_URL` in Vercel to the Render service URL, and set `ALLOWED_ORIGINS` in Render to the Vercel origin(s). The Render service must remain a Web Service because Socket.io requires a long-lived Node process; do not deploy the API as a serverless function.
 * Render Web Service commands: build `npm ci && npm run build`, start `npm start`, health check `/healthz`. Set the service root directory to this project directory if the repository contains multiple apps.
 * Vercel project settings: framework **Next.js**, root directory this project directory, and the normal Next.js build command. Vercel serves the UI; the custom Express server in `server/index.ts` runs only on Render.
+
+### Deploy checklist (Render API + Vercel UI)
+
+Both hosts deploy automatically on every push to `main`.
+
+**Do not set `NODE_ENV` as a Render environment variable.** npm omits `devDependencies` whenever `NODE_ENV=production` is already in the environment, which strips `tailwindcss`, `autoprefixer` and `typescript` and makes `next build` fail in seconds. The `start` script sets production itself (`cross-env NODE_ENV=production`), and `next build` sets it internally, so the build still writes to `.next-prod` and the server still runs in production mode. (Alternatively, keep the variable and change the build command to `npm ci --include=dev && npm run build`.)
+
+| Render — Web Service | Value |
+| --- | --- |
+| `APP_URL` | the public HTTPS origin, e.g. `https://your-app.onrender.com` — HTTPS is required in production |
+| `ALLOWED_ORIGINS` | every Vercel origin that must reach the API, comma-separated (production + preview) |
+| `JWT_SECRET` · `MONGODB_URI` · `REDIS_URL` | session signing key and backing stores |
+| `GEMINI_API_KEY` | AI grading; leave unset to fall back to answer-key / manual review |
+| `GOOGLE_CLASSROOM_CLIENT_ID` · `GOOGLE_CLASSROOM_CLIENT_SECRET` | keep the secret on Render only |
+| `FIREBASE_PROJECT_ID`, `BREVO_*`, `SESSION_TTL` | Google sign-in verification, reset email, session lifetime |
+
+| Vercel — frontend only | Value |
+| --- | --- |
+| `USE_DEFAULT_DIST_DIR` | `1`, so the build lands in `.next` where Vercel looks for it |
+| `NEXT_PUBLIC_API_URL` | the Render service URL |
+| `NEXT_PUBLIC_FIREBASE_*` | the four public Firebase web-app values |
+
+Never put a server secret (`JWT_SECRET`, `MONGODB_URI`, `REDIS_URL`, `GEMINI_API_KEY`, `BREVO_API_KEY`, `GOOGLE_CLASSROOM_CLIENT_SECRET`) in the Vercel project: the UI never reads them.
+
+`NEXT_PUBLIC_*` values are inlined at build time, so adding or changing one only takes effect after a fresh deploy. Also authorise each deployed origin for sign-in: Firebase console → Authentication → Settings → Authorized domains, and register `https://<render-host>/api/classroom/oauth/callback` as an OAuth redirect URI in Google Cloud.
+
 * For Google Classroom in split hosting, keep `APP_URL` on Render equal to the Render backend URL and register `https://<render-host>/api/classroom/oauth/callback` in Google Cloud. Keep `GOOGLE_CLASSROOM_CLIENT_SECRET` on Render only.
 * Public signup creates student accounts only. Faculty/admin accounts must be provisioned through a trusted operational process; the public signup and Google signup endpoints cannot grant admin access.
 * Production does not seed demo users or sample assessments. Provision the first faculty account and any required initial data through a trusted operational process.
