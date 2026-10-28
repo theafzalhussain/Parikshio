@@ -40,8 +40,26 @@ const firebaseProjectId = (
   ''
 ).trim();
 
+/**
+ * Only the origin of APP_URL is ever used — password-reset links and the
+ * Google Classroom OAuth callback are built from it — so a value that merely
+ * carries extra path/query is normalised rather than refused. Refusing cost a
+ * production boot over a cosmetic difference, and the thrown message did not
+ * say what it had actually received.
+ *
+ * An insecure scheme in production stays fatal: reset links must not be
+ * delivered over http.
+ */
 function resolveAppBaseUrl(): string {
-  const raw = (process.env.APP_URL ?? '').trim().replace(/\/+$/, '');
+  const configured = process.env.APP_URL ?? '';
+  // Zero-width and bidi marks survive `trim()` and are invisible in a hosting
+  // dashboard, yet they corrupt the parsed host — strip them before parsing.
+  const raw = configured
+    .replace(/[\u200B-\u200D\u2060\uFEFF\u202A-\u202E]/g, '')
+    .trim()
+    .replace(/\/+$/, '');
+  const shown = JSON.stringify(configured.length > 120 ? `${configured.slice(0, 120)}…` : configured);
+
   if (!raw) {
     if (isProduction) throw new Error('APP_URL must be set to the public HTTPS origin in production.');
     return '';
@@ -51,15 +69,18 @@ function resolveAppBaseUrl(): string {
   try {
     url = new URL(raw);
   } catch {
-    throw new Error('APP_URL must be an absolute URL, such as https://axiom.example.com.');
+    throw new Error(
+      `APP_URL must be an absolute URL, such as https://axiom.example.com. Received: ${shown}`
+    );
   }
-  if (
-    !url.hostname ||
-    url.origin !== raw ||
-    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
-    (isProduction && url.protocol !== 'https:')
-  ) {
-    throw new Error('APP_URL must be an origin only; production APP_URL must use HTTPS.');
+  if (!url.hostname || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+    throw new Error(`APP_URL must be an http(s) URL with a hostname. Received: ${shown}`);
+  }
+  if (isProduction && url.protocol !== 'https:') {
+    throw new Error(`APP_URL must use HTTPS in production. Received: ${shown}`);
+  }
+  if (url.origin !== raw) {
+    console.warn(`[config] APP_URL normalised to its origin ${url.origin} (received: ${shown})`);
   }
   return url.origin;
 }
