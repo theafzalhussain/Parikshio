@@ -9,8 +9,14 @@
  * Dev deliberately keeps the default `.next` (pointing the dev bundler at a
  * custom directory breaks its on-demand `_document` compilation), so only the
  * production path moves.
+ *
+ * Exception: a managed frontend host (e.g. Vercel) runs only `next build` and
+ * then looks for the default `.next` directory. There is no co-located dev
+ * server to clash with there, so `USE_DEFAULT_DIST_DIR=1` keeps the default
+ * `.next` and lets the host's output detection work.
  */
-const distDir = process.env.NODE_ENV === 'production' ? '.next-prod' : '.next';
+const useDefaultDistDir = process.env.USE_DEFAULT_DIST_DIR === '1';
+const distDir = !useDefaultDistDir && process.env.NODE_ENV === 'production' ? '.next-prod' : '.next';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
