@@ -4,7 +4,7 @@
  */
 import { io } from 'socket.io-client';
 
-const BASE = 'http://localhost:3000';
+const BASE = process.env.BASE_URL ?? 'http://localhost:3000';
 const results = [];
 const ok = (name, pass, extra = '') => {
   results.push({ name, pass, extra });
@@ -39,6 +39,18 @@ const student = await req('POST', '/api/auth/login', {
 });
 const ST = student.json.token;
 console.log(`admin+student logged in (${admin.status}/${student.status})`);
+
+// ── 0. Public signup cannot grant faculty privileges ──
+console.log('\n0) public registration cannot create an admin');
+const adminSignup = await req('POST', '/api/auth/register', {
+  body: {
+    name: 'Untrusted Faculty',
+    email: `admin-escalation-${Date.now()}@example.test`,
+    password: 'SafePass123',
+    role: 'admin'
+  }
+});
+ok('admin role request rejected', adminSignup.status === 403, `HTTP ${adminSignup.status}`);
 
 // ── 1. PATCH no longer wipes the fields it was not given ──
 console.log('\n1) partial PATCH keeps the answer key');
@@ -147,6 +159,30 @@ await new Promise((r) => setTimeout(r, 800));
 // Push a 6-second question, then answer it as that same student.
 const pushed = await req('POST', `/api/exams/${newExam.id}/push`, { token: AT, body: { questionId: qid, timerSeconds: 6 } });
 ok('question pushed', pushed.status === 200, `HTTP ${pushed.status}`);
+studentSocket.emit('join:exam', { examCode: newExam.code, role: 'student' });
+const adminSocket = io(BASE, { auth: { token: AT }, transports: ['websocket'] });
+const tabHiddenEvents = [];
+adminSocket.on('student:tab-hidden', (event) => tabHiddenEvents.push(event));
+await new Promise((resolve, reject) => {
+  if (adminSocket.connected) return resolve();
+  adminSocket.on('connect', resolve);
+  adminSocket.on('connect_error', reject);
+  setTimeout(() => reject(new Error('admin socket connect timeout')), 10000);
+});
+adminSocket.emit('join:exam', { examCode: newExam.code, role: 'admin' });
+await new Promise((r) => setTimeout(r, 300));
+studentSocket.emit('student:tab-hidden', { examCode: newExam.code, studentId: 'spoofed-id' });
+await new Promise((r) => setTimeout(r, 300));
+ok(
+  'tab-hidden alert includes authenticated student identity',
+  tabHiddenEvents.length === 1 && tabHiddenEvents[0].studentId === student.json.user.id,
+  `${tabHiddenEvents.length} event(s); ID ${tabHiddenEvents[0]?.studentId ?? 'missing'}`
+);
+ok('tab-hidden alert carries the correct exam', tabHiddenEvents[0]?.examId === newExam.id);
+adminSocket.emit('student:tab-hidden', { examCode: newExam.code });
+await new Promise((r) => setTimeout(r, 300));
+ok('admin cannot forge a student tab-hidden event', tabHiddenEvents.length === 1, `${tabHiddenEvents.length} event(s)`);
+adminSocket.disconnect();
 const pushedAt = Date.now();
 const submitted = await req('POST', '/api/student/answers', { token: ST, body: { examId: newExam.id, questionId: qid, answer: '1' } });
 ok('student answer accepted', submitted.status === 200, `HTTP ${submitted.status} ${submitted.json?.error ?? ''}`);
@@ -160,7 +196,10 @@ ok(
 
 // ── 9. The grace window is actually honoured ──
 console.log('\n9) grace window honoured at the buzzer');
-const endsAt = pushedAt + 6000;
+// Use the server's own deadline from the push response — the local `pushedAt`
+// above is captured several socket round-trips later, so it under-reports the
+// window and makes a submit inside grace look late.
+const endsAt = pushed.json?.active?.endsAt ?? pushedAt + 6000;
 const waitMs = endsAt + 400 - Date.now(); // 400ms past the deadline, inside the 1500ms grace
 if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
 const student2 = await req('POST', '/api/auth/register', {
@@ -199,6 +238,26 @@ await req('POST', `/api/exams/${newExam.id}/push`, { token: AT, body: { question
 await req('POST', `/api/exams/${newExam.id}/push`, { token: AT, body: { questionId: q2.id, timerSeconds: 60 } });
 const state = (await req('GET', `/api/exams/${newExam.id}`, { token: AT })).json;
 ok('current question is the newest one', state?.exam?.current?.questionId === q2.id, String(state?.exam?.current?.questionId));
+const clockTester = await req('POST', '/api/auth/register', {
+  body: { name: 'Clock Tester', email: `clock-${Date.now()}@axiom.edu`, password: 'ClockPass1', role: 'student' }
+});
+const spoofedTimeSubmit = await req('POST', '/api/student/answers', {
+  token: clockTester.json.token,
+  body: {
+    examId: newExam.id,
+    questionId: q2.id,
+    answer: '0',
+    offline: true,
+    clientSubmittedAt: state.exam.current.pushedAt - 60_000
+  }
+});
+ok(
+  'offline client timestamp cannot improve latency score',
+  spoofedTimeSubmit.status === 200 &&
+    spoofedTimeSubmit.json?.response?.latencyMs ===
+      spoofedTimeSubmit.json?.response?.submittedAt - state.exam.current.pushedAt,
+  `HTTP ${spoofedTimeSubmit.status}, latency ${spoofedTimeSubmit.json?.response?.latencyMs ?? 'n/a'}ms`
+);
 
 // ── 11. A finished exam cannot be reopened by pushing ──
 console.log('\n11) ended exam rejects a push');

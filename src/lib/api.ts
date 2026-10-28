@@ -1,4 +1,5 @@
 const TOKEN_KEY = 'axiom.token';
+const API_ORIGIN = (process.env.NEXT_PUBLIC_API_URL ?? '').trim().replace(/\/+$/, '');
 
 let bearer: string | null = null;
 
@@ -63,7 +64,7 @@ const SESSION_DEAD_CODES = new Set([
 
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
   const token = getToken();
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_ORIGIN}/api${path}`, {
     method: options.method ?? 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -80,7 +81,7 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
 /** POST helper for multipart uploads (the JSON helper can't carry FormData). */
 export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
   const token = getToken();
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_ORIGIN}/api${path}`, {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: form,

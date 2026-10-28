@@ -67,6 +67,7 @@ export default function StudentExamPage() {
   const [error, setError] = useState<string | null>(null);
   const warned = useRef<string | null>(null);
   const lastQuestion = useRef<string | null>(null);
+  const pendingHiddenReport = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -84,12 +85,29 @@ export default function StudentExamPage() {
 
   // realtime
   useEffect(() => {
+    pendingHiddenReport.current = false;
     // Socket.io rooms do not survive a reconnect: a device that drops off long
     // enough to get a new connection must join the exam room again, or it
     // silently stops receiving pushes, locks and leaderboard updates.
-    const join = () => socket.emit('join:exam', { examCode: code, role: 'student' });
+    const join = () => {
+      socket.emit('join:exam', { examCode: code, role: 'student' });
+      if (pendingHiddenReport.current) {
+        socket.emit('student:tab-hidden', { examCode: code });
+        pendingHiddenReport.current = false;
+      }
+    };
     if (socket.connected) join();
     socket.on('connect', join);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'hidden') return;
+      if (socket.connected) {
+        socket.emit('student:tab-hidden', { examCode: code });
+      } else {
+        pendingHiddenReport.current = true;
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     const onState = (payload: ExamPublic) => {
       if (payload.code !== code) return;
@@ -130,6 +148,7 @@ export default function StudentExamPage() {
     socket.on('answer:graded', onAnswerGraded);
     return () => {
       socket.off('connect', join);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       socket.off('exam:state', onState);
       socket.off('question:pushed', onPushed);
       socket.off('question:locked', onLocked);
@@ -140,6 +159,7 @@ export default function StudentExamPage() {
   }, [socket, code, load, push]);
 
   const active = exam?.active ?? null;
+  const liveExam = exam?.status === 'live';
   const question: StudentQuestion | null = active?.question ?? null;
   const remaining = active ? Math.max(0, active.endsAt - now) : 0;
   const totalMs = active ? active.endsAt - active.pushedAt : 0;
@@ -267,7 +287,7 @@ export default function StudentExamPage() {
     try {
       const res = await api<AnswerReceipt>('/student/answers', {
         method: 'POST',
-        body: { examId: exam.id, questionId: question.id, answer: value, clientSubmittedAt: committedAt }
+        body: { examId: exam.id, questionId: question.id, answer: value }
       });
       setExam(res.exam);
       setBoard(res.leaderboard);
@@ -461,6 +481,11 @@ export default function StudentExamPage() {
               {exam.title} · {exam.totalQuestions} questions. Keep this tab open — the question appears here the moment
               your faculty pushes it.
             </p>
+            {liveExam && (
+              <p className="relative mx-auto mt-3 max-w-md text-[11px] leading-relaxed text-amber-200/65">
+                For exam integrity, leaving this tab during the live session is reported to faculty.
+              </p>
+            )}
             <div className="relative mx-auto mt-6 flex max-w-sm items-center justify-between rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3">
               <span className="text-[11px] uppercase tracking-[0.14em] text-white/35">room code</span>
               <span className="font-mono text-[15px] tracking-[0.3em] text-lime-300">{exam.code}</span>
@@ -510,6 +535,11 @@ export default function StudentExamPage() {
         </div>
 
         <OfflineQueuePanel outbox={outbox} />
+        {liveExam && (
+          <p className="text-center text-[11px] leading-relaxed text-amber-200/65">
+            For exam integrity, leaving this tab during the live session is reported to faculty.
+          </p>
+        )}
 
         <div className="grid gap-4 lg:grid-cols-[1.55fr_1fr]">
           {/* question column */}

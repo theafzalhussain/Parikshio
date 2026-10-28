@@ -10,6 +10,8 @@ import {
   Check,
   CircleStop,
   Copy,
+  EyeOff,
+  GraduationCap,
   Lock,
   Radio,
   Send,
@@ -37,7 +39,8 @@ import type {
   LeaderboardEntry,
   Question,
   QuestionType,
-  Response
+  Response,
+  StudentTabHiddenEvent
 } from '@shared/types';
 
 interface Detail {
@@ -50,6 +53,26 @@ interface Detail {
 }
 
 type FeedRow = Detail['responses'][number];
+
+interface ClassroomStatus {
+  configured: boolean;
+  connected: boolean;
+  email: string | null;
+  connectedAt: number | null;
+}
+
+interface ClassroomCourse {
+  id: string;
+  name: string;
+  section?: string;
+}
+
+interface SyncedClassroomStudent {
+  classroomUserId: string;
+  name: string;
+  email: string;
+  studentId: string | null;
+}
 
 const isSubjectiveType = (type: QuestionType) => type === 'short' || type === 'long';
 
@@ -96,6 +119,12 @@ export default function ControlRoomPage() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [board, setBoard] = useState<LeaderboardEntry[]>([]);
   const [feed, setFeed] = useState<Detail['responses']>([]);
+  const [tabSwitches, setTabSwitches] = useState<StudentTabHiddenEvent[]>([]);
+  const [classroom, setClassroom] = useState<ClassroomStatus | null>(null);
+  const [classroomCourses, setClassroomCourses] = useState<ClassroomCourse[]>([]);
+  const [selectedClassroomCourse, setSelectedClassroomCourse] = useState('');
+  const [classroomRoster, setClassroomRoster] = useState<SyncedClassroomStudent[]>([]);
+  const [classroomBusy, setClassroomBusy] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, number>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [grading, setGrading] = useState<Detail['responses'][number] | null>(null);
@@ -130,6 +159,45 @@ export default function ControlRoomPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadClassroom = useCallback(async () => {
+    try {
+      const { classroom: status } = await api<{ classroom: ClassroomStatus }>('/classroom/status');
+      setClassroom(status);
+      if (status.connected) {
+        const { courses } = await api<{ courses: ClassroomCourse[] }>('/classroom/courses');
+        setClassroomCourses(courses);
+      } else {
+        setClassroomCourses([]);
+      }
+    } catch (err) {
+      push({ kind: 'error', title: 'Could not load Google Classroom', body: (err as Error).message });
+    }
+  }, [push]);
+
+  useEffect(() => {
+    void loadClassroom();
+  }, [loadClassroom]);
+
+  useEffect(() => {
+    const result = new URLSearchParams(window.location.search).get('classroom');
+    if (!result) return;
+    if (result === 'connected') {
+      push({ kind: 'success', title: 'Google Classroom connected' });
+      void loadClassroom();
+    } else if (result === 'denied') {
+      push({ kind: 'warn', title: 'Google Classroom connection was cancelled' });
+    } else if (result === 'error') {
+      push({ kind: 'error', title: 'Google Classroom connection failed', body: 'Check the OAuth setup and try connecting again.' });
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete('classroom');
+    window.history.replaceState({}, '', url);
+  }, [push, loadClassroom]);
+
+  useEffect(() => {
+    setSelectedClassroomCourse(detail?.exam.classroomCourseId ?? '');
+  }, [detail?.exam.classroomCourseId]);
 
   // realtime wiring
   useEffect(() => {
@@ -186,10 +254,20 @@ export default function ControlRoomPage() {
     };
     const onLocked = () => void load();
     const onEnded = () => void load();
+    const onTabHidden = (event: StudentTabHiddenEvent) => {
+      if (event.examId !== examId) return;
+      setTabSwitches((previous) => [event, ...previous].slice(0, 20));
+      push({
+        kind: 'warn',
+        title: 'Student left the exam tab',
+        body: `${event.studentName} · student ID ${event.studentId}`
+      });
+    };
 
     socket.on('response:new', onResponse);
     socket.on('response:graded', onGraded);
     socket.on('leaderboard:update', onBoard);
+    socket.on('student:tab-hidden', onTabHidden);
     socket.on('question:locked', onLocked);
     socket.on('exam:ended', onEnded);
     return () => {
@@ -197,6 +275,7 @@ export default function ControlRoomPage() {
       socket.off('response:new', onResponse);
       socket.off('response:graded', onGraded);
       socket.off('leaderboard:update', onBoard);
+      socket.off('student:tab-hidden', onTabHidden);
       socket.off('question:locked', onLocked);
       socket.off('exam:ended', onEnded);
     };
@@ -247,12 +326,112 @@ export default function ControlRoomPage() {
 
   async function endSession() {
     try {
-      await api(`/exams/${examId}/end`, { method: 'POST' });
-      push({ kind: 'info', title: 'Session ended', body: 'Analytics are final.' });
+      const result = await api<{
+        classroom?: { status: 'published' | 'already-published' | 'failed'; error?: string; gradedStudents?: number };
+      }>(`/exams/${examId}/end`, { method: 'POST' });
+      push({
+        kind: result.classroom?.status === 'failed' ? 'warn' : 'info',
+        title: 'Session ended',
+        body: result.classroom?.status === 'failed'
+          ? `Classroom results were not posted: ${result.classroom.error ?? 'retry from the integration panel.'}`
+          : result.classroom
+            ? `Classroom results posted for ${result.classroom.gradedStudents ?? 0} students.`
+            : 'Analytics are final.'
+      });
       setConfirmEnd(false);
       await load();
     } catch (err) {
       push({ kind: 'error', title: 'Could not end session', body: (err as Error).message });
+    }
+  }
+
+  async function connectClassroom() {
+    setClassroomBusy(true);
+    try {
+      const { authorizationUrl } = await api<{ authorizationUrl: string }>('/classroom/oauth/start', {
+        method: 'POST',
+        body: { examId }
+      });
+      window.location.assign(authorizationUrl);
+    } catch (err) {
+      push({ kind: 'error', title: 'Could not start Google Classroom connection', body: (err as Error).message });
+      setClassroomBusy(false);
+    }
+  }
+
+  async function disconnectClassroom() {
+    setClassroomBusy(true);
+    try {
+      await api('/classroom/disconnect', { method: 'POST' });
+      setClassroomRoster([]);
+      setSelectedClassroomCourse('');
+      await loadClassroom();
+      await load();
+      push({ kind: 'success', title: 'Google Classroom disconnected' });
+    } catch (err) {
+      push({ kind: 'error', title: 'Could not disconnect Google Classroom', body: (err as Error).message });
+    } finally {
+      setClassroomBusy(false);
+    }
+  }
+
+  async function saveClassroomCourse() {
+    if (!selectedClassroomCourse) return;
+    setClassroomBusy(true);
+    try {
+      const result = await api<{ exam: Exam }>(`/exams/${examId}/classroom/course`, {
+        method: 'POST',
+        body: { courseId: selectedClassroomCourse }
+      });
+      setDetail((current) => current ? { ...current, exam: result.exam } : current);
+      setClassroomRoster([]);
+      push({ kind: 'success', title: 'Google Classroom course linked', body: result.exam.classroomCourseName ?? selectedClassroomCourse });
+    } catch (err) {
+      push({ kind: 'error', title: 'Could not link Classroom course', body: (err as Error).message });
+    } finally {
+      setClassroomBusy(false);
+    }
+  }
+
+  async function syncClassroomRoster() {
+    setClassroomBusy(true);
+    try {
+      const result = await api<{
+        roster: SyncedClassroomStudent[];
+        matchedCount: number;
+        unmatchedCount: number;
+      }>(`/exams/${examId}/classroom/sync-roster`, { method: 'POST' });
+      setClassroomRoster(result.roster);
+      push({
+        kind: result.unmatchedCount ? 'warn' : 'success',
+        title: 'Class roster synced',
+        body: `${result.matchedCount} matched to existing students · ${result.unmatchedCount} unmatched`
+      });
+    } catch (err) {
+      push({ kind: 'error', title: 'Could not sync roster', body: (err as Error).message });
+    } finally {
+      setClassroomBusy(false);
+    }
+  }
+
+  async function publishClassroomResults() {
+    setClassroomBusy(true);
+    try {
+      const result = await api<{ classroom: { gradedStudents: number } }>(
+        `/exams/${examId}/classroom/publish-results`,
+        { method: 'POST' }
+      );
+      push({
+        kind: 'success',
+        title: 'Classroom results published',
+        body: `${result.classroom.gradedStudents} student grades posted.`
+      });
+      await load();
+    } catch (err) {
+      push({ kind: 'error', title: 'Classroom results not published', body: (err as Error).message });
+      await load();
+    } finally {
+      setClassroomBusy(false);
     }
   }
 
@@ -649,6 +828,168 @@ export default function ControlRoomPage() {
                   <BarChart3 className="h-3.5 w-3.5" /> Full analytics
                   <ArrowRight className="h-3.5 w-3.5" />
                 </LinkButton>
+              </Panel>
+
+              <Panel className="p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="eyebrow">Integrity monitor</p>
+                    <h3 className="mt-1 text-[15px] font-semibold text-white">Tab switches</h3>
+                  </div>
+                  <Badge tone={tabSwitches.length ? 'amber' : 'neutral'}>
+                    <EyeOff className="h-3 w-3" /> {tabSwitches.length}
+                  </Badge>
+                </div>
+                <p className="mt-1.5 text-[11px] text-white/35">
+                  Alerts are sent when a student hides this live exam tab.
+                </p>
+                <div className="mt-3 max-h-56 space-y-2 overflow-y-auto">
+                  {tabSwitches.length === 0 ? (
+                    <p className="py-4 text-center text-[11px] text-white/30">No tab switches reported.</p>
+                  ) : (
+                    tabSwitches.map((event) => (
+                      <div
+                        key={`${event.studentId}:${event.hiddenAt}`}
+                        className="rounded-xl border border-amber-300/10 bg-amber-300/[0.04] p-2.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-[11.5px] font-medium text-white/80">{event.studentName}</p>
+                          <span className="num shrink-0 text-[10px] text-white/35">
+                            {new Date(event.hiddenAt).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <p className="mt-1 break-all font-mono text-[10px] text-white/35">
+                          Student ID: {event.studentId}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </Panel>
+
+              <Panel className="p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="eyebrow">Google Classroom</p>
+                    <h3 className="mt-1 text-[15px] font-semibold text-white">Roster & results</h3>
+                  </div>
+                  <GraduationCap className="h-4 w-4 text-sky-300" />
+                </div>
+                {!classroom?.configured ? (
+                  <p className="mt-3 rounded-lg border border-amber-300/10 bg-amber-300/[0.04] p-3 text-[11px] leading-relaxed text-amber-100/65">
+                    Google Classroom is not configured on this server. Set the OAuth Client ID and Client Secret to enable it.
+                  </p>
+                ) : !classroom.connected ? (
+                  <>
+                    <p className="mt-2 text-[11px] leading-relaxed text-white/40">
+                      Connect a teacher account to link this exam to a course, match the roster to existing student accounts, and publish scores.
+                    </p>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="mt-3 w-full"
+                      disabled={classroomBusy}
+                      onClick={connectClassroom}
+                    >
+                      <GraduationCap className="h-3.5 w-3.5" /> Connect Google Classroom
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-emerald-300/10 bg-emerald-300/[0.04] p-2.5">
+                      <div className="min-w-0">
+                        <p className="text-[10px] uppercase tracking-[0.1em] text-emerald-200/50">Connected teacher</p>
+                        <p className="mt-0.5 truncate text-[11.5px] text-white/75">{classroom.email}</p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={classroomBusy}
+                        onClick={disconnectClassroom}
+                        className="shrink-0 text-[10px] text-white/35 transition hover:text-rose-200 disabled:opacity-40"
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+
+                    <span className="mt-3 block text-[10px] uppercase tracking-[0.12em] text-white/40">Course for this exam</span>
+                    <select
+                      value={selectedClassroomCourse}
+                      onChange={(event) => setSelectedClassroomCourse(event.target.value)}
+                      disabled={classroomBusy || exam.status === 'ended'}
+                      className="mt-1.5 w-full rounded-lg border border-white/[0.09] bg-[#111419] px-3 py-2 text-[11.5px] text-white/75 outline-none focus:border-sky-300/30 disabled:opacity-50"
+                    >
+                      <option value="">Select a Classroom course</option>
+                      {classroomCourses.map((course) => (
+                        <option key={course.id} value={course.id}>
+                          {course.name}{course.section ? ` · ${course.section}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="mt-2 w-full"
+                      disabled={classroomBusy || !selectedClassroomCourse || exam.status === 'ended'}
+                      onClick={saveClassroomCourse}
+                    >
+                      {exam.classroomCourseId === selectedClassroomCourse ? 'Update linked course' : 'Link course'}
+                    </Button>
+
+                    {exam.classroomCourseId && (
+                      <>
+                        <Divider className="my-3" />
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[11px] text-white/50">Linked: {exam.classroomCourseName ?? exam.classroomCourseId}</p>
+                          <button
+                            type="button"
+                            disabled={classroomBusy}
+                            onClick={syncClassroomRoster}
+                            className="shrink-0 text-[10px] font-medium text-sky-200/70 transition hover:text-sky-100 disabled:opacity-40"
+                          >
+                            Sync roster
+                          </button>
+                        </div>
+                        {classroomRoster.length > 0 && (
+                          <div className="mt-2 max-h-36 space-y-1.5 overflow-y-auto">
+                            {classroomRoster.map((student) => (
+                              <div key={student.classroomUserId} className="flex items-center justify-between gap-2 text-[10.5px]">
+                                <span className="min-w-0 truncate text-white/60">{student.name} · {student.email}</span>
+                                <span className={cx('shrink-0', student.studentId ? 'text-emerald-200/70' : 'text-amber-200/70')}>
+                                  {student.studentId ? 'Matched' : 'No account'}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {exam.classroomPublishStatus && (
+                          <div className={cx(
+                            'mt-3 rounded-lg border p-2.5 text-[10.5px]',
+                            exam.classroomPublishStatus === 'published'
+                              ? 'border-emerald-300/10 bg-emerald-300/[0.04] text-emerald-100/70'
+                              : 'border-rose-300/10 bg-rose-300/[0.04] text-rose-100/70'
+                          )}>
+                            <p>
+                              {exam.classroomPublishStatus === 'published'
+                                ? `Results published${exam.classroomPublishedAt ? ` · ${new Date(exam.classroomPublishedAt).toLocaleString()}` : ''}`
+                                : `Publication failed: ${exam.classroomPublishError ?? 'unknown error'}`}
+                            </p>
+                          </div>
+                        )}
+                        {exam.status === 'ended' && exam.classroomPublishStatus !== 'published' && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="mt-2 w-full"
+                            disabled={classroomBusy}
+                            onClick={publishClassroomResults}
+                          >
+                            Retry result publishing
+                          </Button>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
               </Panel>
             </div>
           </div>

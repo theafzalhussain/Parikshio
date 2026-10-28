@@ -14,15 +14,23 @@ import { useAuth } from '@/lib/auth';
 import { GoogleSignInError, firebaseConfigured } from '@/lib/firebase';
 import { ApiError, cx } from '@/lib/api';
 
-const DEMO = {
-  admin: { email: 'admin@axiom.edu', password: 'admin123' },
-  student: { email: 'aarav@axiom.edu', password: 'student123' }
-} as const;
+type DemoRole = 'admin' | 'student';
+type DemoCredentials = Record<DemoRole, { email: string; password: string }>;
 
-type DemoRole = keyof typeof DEMO;
+function isDemoCredentials(value: unknown): value is DemoCredentials {
+  if (!value || typeof value !== 'object') return false;
+  const credentials = value as Record<string, unknown>;
+  return (['admin', 'student'] as const).every((role) => {
+    const account = credentials[role];
+    if (!account || typeof account !== 'object') return false;
+    const fields = account as Record<string, unknown>;
+    return typeof fields.email === 'string' && typeof fields.password === 'string';
+  });
+}
 
 export default function LoginPage() {
   const router = useRouter();
+  const showDemoAccounts = process.env.NODE_ENV !== 'production';
   const { user, ready, login, loginWithGoogle, sessionNotice, clearSessionNotice } = useAuth();
   const { push } = useToast();
 
@@ -32,15 +40,39 @@ export default function LoginPage() {
   const [googleBusy, setGoogleBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeDemo, setActiveDemo] = useState<DemoRole | null>(null);
+  const [demoCredentials, setDemoCredentials] = useState<DemoCredentials | null>(null);
+  const [demoLoadError, setDemoLoadError] = useState(false);
 
   useEffect(() => {
     if (ready && user) router.replace(user.role === 'admin' ? '/admin' : '/student');
   }, [ready, user, router]);
 
-  function fillDemo(role: DemoRole) {
+  useEffect(() => {
+    if (!showDemoAccounts) return;
+    let active = true;
+
+    async function loadDemoAccounts() {
+      try {
+        const response = await fetch('/api/auth/demo');
+        if (!response.ok) throw new Error('Demo accounts are unavailable.');
+        const credentials: unknown = await response.json();
+        if (!isDemoCredentials(credentials)) throw new Error('Invalid demo account response.');
+        if (active) setDemoCredentials(credentials);
+      } catch {
+        if (active) setDemoLoadError(true);
+      }
+    }
+
+    void loadDemoAccounts();
+    return () => {
+      active = false;
+    };
+  }, [showDemoAccounts]);
+
+  function fillDemo(role: DemoRole, credentials: DemoCredentials) {
     setActiveDemo(role);
-    setEmail(DEMO[role].email);
-    setPassword(DEMO[role].password);
+    setEmail(credentials[role].email);
+    setPassword(credentials[role].password);
     setError(null);
     clearSessionNotice();
   }
@@ -92,14 +124,22 @@ export default function LoginPage() {
   return (
     <AuthShell
       eyebrow="Sign in"
-      badge={{ tone: 'lime', icon: Sparkles, label: 'live demo seeded' }}
+      badge={{
+        tone: 'lime',
+        icon: Sparkles,
+        label: showDemoAccounts ? 'live demo seeded' : 'secure institute sign-in'
+      }}
       heading={
         <>
           The exam starts the moment you{' '}
           <span className="font-display italic text-lime-300">press push.</span>
         </>
       }
-      subheading="Sign in as faculty to author and broadcast questions, or as a student to receive them with a server-synchronised timer. The same platform, two very different views."
+      subheading={
+        showDemoAccounts
+          ? 'Sign in as faculty to author and broadcast questions, or as a student to receive them with a server-synchronised timer. The same platform, two very different views.'
+          : 'Sign in with your institute credentials. Students can create accounts; faculty accounts are provisioned by an administrator.'
+      }
       highlights={[
         { icon: ShieldCheck, text: 'JWT sessions with strict role checks on every route' },
         { icon: Lock, text: 'Students never receive correct answer keys' },
@@ -113,7 +153,11 @@ export default function LoginPage() {
     >
       <AuthHeading
         title="Welcome back"
-        sub="Use a demo account below, or sign in with your own credentials."
+        sub={
+          showDemoAccounts
+            ? 'Use a demo account below, or sign in with your own credentials.'
+            : 'Sign in with your institute account.'
+        }
       />
 
       {sessionNotice && (
@@ -122,34 +166,42 @@ export default function LoginPage() {
         </div>
       )}
 
-      {/* demo account shortcuts */}
-      <div className="mb-5 grid grid-cols-2 gap-2">
-        {(['admin', 'student'] as DemoRole[]).map((role) => (
-          <button
-            key={role}
-            type="button"
-            onClick={() => fillDemo(role)}
-            className={cx(
-              'focus-ring group rounded-2xl border p-3 text-left transition',
-              activeDemo === role
-                ? 'border-aurora-400/50 bg-aurora-500/[0.1]'
-                : 'border-white/[0.08] bg-white/[0.02] hover:border-white/20'
-            )}
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/70">
-                {role}
-              </span>
-              {activeDemo === role && (
-                <span className="grid h-4 w-4 place-items-center rounded-full bg-aurora-500 text-white">
-                  <Check className="h-2.5 w-2.5" />
-                </span>
+      {showDemoAccounts && demoCredentials && (
+        <div className="mb-5 grid grid-cols-2 gap-2">
+          {(['admin', 'student'] as DemoRole[]).map((role) => (
+            <button
+              key={role}
+              type="button"
+              onClick={() => fillDemo(role, demoCredentials)}
+              className={cx(
+                'focus-ring group rounded-2xl border p-3 text-left transition',
+                activeDemo === role
+                  ? 'border-aurora-400/50 bg-aurora-500/[0.1]'
+                  : 'border-white/[0.08] bg-white/[0.02] hover:border-white/20'
               )}
-            </div>
-            <p className="mt-1 font-mono text-[10.5px] leading-relaxed text-white/35">{DEMO[role].email}</p>
-          </button>
-        ))}
-      </div>
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/70">
+                  {role}
+                </span>
+                {activeDemo === role && (
+                  <span className="grid h-4 w-4 place-items-center rounded-full bg-aurora-500 text-white">
+                    <Check className="h-2.5 w-2.5" />
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 font-mono text-[10.5px] leading-relaxed text-white/35">
+                {demoCredentials[role].email}
+              </p>
+            </button>
+          ))}
+        </div>
+      )}
+      {showDemoAccounts && demoLoadError && (
+        <div className="mb-5">
+          <AuthAlert tone="warn">Development demo accounts could not be loaded.</AuthAlert>
+        </div>
+      )}
 
       <GoogleButton onClick={google} loading={googleBusy} disabled={busy} configured={firebaseConfigured} />
 
@@ -177,7 +229,7 @@ export default function LoginPage() {
           value={password}
           onChange={setPassword}
           autoComplete="current-password"
-          hint="demo: admin123 / student123"
+          hint={showDemoAccounts ? 'Choose a demo account above' : undefined}
         />
 
         <div className="flex justify-end">

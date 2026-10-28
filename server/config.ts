@@ -4,6 +4,7 @@ const DEV_FALLBACK_SECRET = 'axiom-live-dev-secret-change-me';
 
 const nodeEnv = process.env.NODE_ENV ?? 'development';
 const isProduction = nodeEnv === 'production';
+const port = Number(process.env.PORT ?? 3000);
 
 const rawSecret = (process.env.JWT_SECRET ?? '').trim();
 
@@ -39,8 +40,47 @@ const firebaseProjectId = (
   ''
 ).trim();
 
+function resolveAppBaseUrl(): string {
+  const raw = (process.env.APP_URL ?? '').trim().replace(/\/+$/, '');
+  if (!raw) {
+    if (isProduction) throw new Error('APP_URL must be set to the public HTTPS origin in production.');
+    return '';
+  }
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('APP_URL must be an absolute URL, such as https://axiom.example.com.');
+  }
+  if (
+    !url.hostname ||
+    url.origin !== raw ||
+    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    (isProduction && url.protocol !== 'https:')
+  ) {
+    throw new Error('APP_URL must be an origin only; production APP_URL must use HTTPS.');
+  }
+  return url.origin;
+}
+
+function resolveOfflineSyncGraceMs(): number {
+  const configured = process.env.OFFLINE_SYNC_GRACE_MS;
+  // Production forces 0: client-reported submit times cannot be trusted, so a
+  // replay must still arrive before its question closes. The default is 0 in
+  // production so the server boots even when the var is unset; only an explicit
+  // non-zero value in production is a misconfiguration worth refusing.
+  const graceMs = nonNegativeInt(configured, isProduction ? 0 : 45_000);
+  if (isProduction && graceMs > 0) {
+    throw new Error(
+      'OFFLINE_SYNC_GRACE_MS must be 0 in production because client-reported submit times cannot be trusted.'
+    );
+  }
+  return isProduction ? 0 : graceMs;
+}
+
 export const config = {
-  port: Number(process.env.PORT ?? 3000),
+  port,
   jwtSecret: resolveJwtSecret(),
   /** How long a login stays valid. Accepts any `jsonwebtoken` duration string. */
   sessionTtl: (process.env.SESSION_TTL ?? '12h').trim() || '12h',
@@ -48,15 +88,13 @@ export const config = {
   redisUrl: (process.env.REDIS_URL ?? '').trim(),
   /** Grace window (ms) after a question locks during which a late submit is still accepted */
   graceMs: 1500,
-  /**
-   * Extra window (ms) granted only to answers replayed from a student device's
-   * offline outbox. A phone that drops its connection at the buzzer reconnects
-   * seconds later, and without this allowance the answer it saved locally would
-   * be thrown away. The replay still has to claim a submit time that falls
-   * inside the question's own window, so this buys delivery time, not thinking
-   * time. Set OFFLINE_SYNC_GRACE_MS=0 to refuse late replays entirely.
-   */
-  offlineSyncGraceMs: nonNegativeInt(process.env.OFFLINE_SYNC_GRACE_MS, 45_000),
+  /** Development-only allowance for offline answer delivery after a deadline. */
+  offlineSyncGraceMs: resolveOfflineSyncGraceMs(),
+  /** Explicitly trusted proxy addresses/subnets; an empty list trusts no proxy headers. */
+  trustedProxies: (process.env.TRUSTED_PROXIES ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean),
   nodeEnv,
   /**
    * Extra origins allowed to open a WebSocket. The UI and API share one origin,
@@ -71,12 +109,19 @@ export const config = {
     projectId: firebaseProjectId,
     enabled: firebaseProjectId.length > 0
   },
-  /**
-   * Absolute base URL used to build links inside emails (password reset, etc).
-   * In production set APP_URL to the deployed origin, e.g.
-   * https://parikshio.onrender.com — otherwise reset links point at localhost.
-   */
-  appBaseUrl: (process.env.APP_URL ?? '').trim().replace(/\/+$/, ''),
+  googleClassroom: {
+    clientId: (process.env.GOOGLE_CLASSROOM_CLIENT_ID ?? '').trim(),
+    clientSecret: (process.env.GOOGLE_CLASSROOM_CLIENT_SECRET ?? '').trim(),
+    get enabled() {
+      return this.clientId.length > 0 && this.clientSecret.length > 0;
+    },
+    get redirectUri() {
+      const base = resolveAppBaseUrl() || `http://localhost:${port}`;
+      return `${base}/api/classroom/oauth/callback`;
+    }
+  },
+  /** Trusted public origin used to build password-reset links. */
+  appBaseUrl: resolveAppBaseUrl(),
   /**
    * Brevo (transactional email). Only used to deliver the password-reset link.
    * Email sending is enabled only when BREVO_API_KEY and a sender address are set.

@@ -2,6 +2,8 @@ import type { Exam, Paper, Question, Response } from '../shared/types';
 import { parseQuestionPaper } from './extract';
 import { gradeAnswer } from '../shared/grade';
 import { hashPassword } from './auth';
+import { isProd } from './config';
+import { DEMO_ACCOUNT_EMAILS } from './demoAccounts';
 import { store, uid } from './store';
 import { persist } from './mongo';
 
@@ -161,20 +163,21 @@ function seedSamplePaper(): void {
 }
 
 export function seedIfEmpty(): void {
+  if (isProd) return;
   if (store.users.length > 0) return;
 
   const now = Date.now();
   const users = [
-    { name: 'Dr. Meera Sharma', email: 'admin@axiom.edu', role: 'admin' as const, org: 'Axiom Institute of Technology', password: 'admin123' },
-    { name: 'Faculty · Rohan Deshpande', email: 'faculty@axiom.edu', role: 'admin' as const, org: 'Axiom Institute of Technology', password: 'admin123' },
-    { name: 'Aarav Mehta', email: 'aarav@axiom.edu', role: 'student' as const, org: 'CSE · Semester 5', password: 'student123' },
-    { name: 'Zoya Khan', email: 'zoya@axiom.edu', role: 'student' as const, org: 'CSE · Semester 5', password: 'student123' },
-    { name: 'Rohan Iyer', email: 'rohan@axiom.edu', role: 'student' as const, org: 'ECE · Semester 5', password: 'student123' },
-    { name: 'Ananya Rao', email: 'ananya@axiom.edu', role: 'student' as const, org: 'CSE · Semester 5', password: 'student123' },
-    { name: 'Kabir Singh', email: 'kabir@axiom.edu', role: 'student' as const, org: 'MECH · Semester 3', password: 'student123' },
-    { name: 'Diya Nair', email: 'diya@axiom.edu', role: 'student' as const, org: 'ECE · Semester 3', password: 'student123' },
-    { name: 'Ishaan Verma', email: 'ishaan@axiom.edu', role: 'student' as const, org: 'CSE · Semester 3', password: 'student123' },
-    { name: 'Vivaan Gupta', email: 'vivaan@axiom.edu', role: 'student' as const, org: 'IT · Semester 5', password: 'student123' }
+    { name: 'Dr. Meera Sharma', email: DEMO_ACCOUNT_EMAILS.admin, role: 'admin' as const, org: 'Axiom Institute of Technology', password: 'admin123' },
+    { name: 'Faculty · Rohan Deshpande', email: DEMO_ACCOUNT_EMAILS.faculty, role: 'admin' as const, org: 'Axiom Institute of Technology', password: 'admin123' },
+    { name: 'Aarav Mehta', email: DEMO_ACCOUNT_EMAILS.aarav, role: 'student' as const, org: 'CSE · Semester 5', password: 'student123' },
+    { name: 'Zoya Khan', email: DEMO_ACCOUNT_EMAILS.zoya, role: 'student' as const, org: 'CSE · Semester 5', password: 'student123' },
+    { name: 'Rohan Iyer', email: DEMO_ACCOUNT_EMAILS.rohan, role: 'student' as const, org: 'ECE · Semester 5', password: 'student123' },
+    { name: 'Ananya Rao', email: DEMO_ACCOUNT_EMAILS.ananya, role: 'student' as const, org: 'CSE · Semester 5', password: 'student123' },
+    { name: 'Kabir Singh', email: DEMO_ACCOUNT_EMAILS.kabir, role: 'student' as const, org: 'MECH · Semester 3', password: 'student123' },
+    { name: 'Diya Nair', email: DEMO_ACCOUNT_EMAILS.diya, role: 'student' as const, org: 'ECE · Semester 3', password: 'student123' },
+    { name: 'Ishaan Verma', email: DEMO_ACCOUNT_EMAILS.ishaan, role: 'student' as const, org: 'CSE · Semester 3', password: 'student123' },
+    { name: 'Vivaan Gupta', email: DEMO_ACCOUNT_EMAILS.vivaan, role: 'student' as const, org: 'IT · Semester 5', password: 'student123' }
   ].map((u) => ({
     id: u.role === 'admin' ? uid('usr_') : uid('stu_'),
     name: u.name,

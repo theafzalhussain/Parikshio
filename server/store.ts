@@ -16,6 +16,12 @@ export interface StoredUser extends PublicUser {
    */
   tokenVersion?: number;
   lastLoginAt?: number;
+  googleClassroom?: {
+    email: string;
+    googleUserId: string;
+    encryptedRefreshToken: string;
+    connectedAt: number;
+  };
 }
 
 /** A pending password-reset request. Only the token hash is persisted. */

@@ -9,7 +9,7 @@ import { initMongo, mongoReady } from './mongo';
 import { seedIfEmpty } from './seed';
 import { db, store } from './store';
 import { userFromToken } from './auth';
-import { setIO, examRoom, staffRoom, staffLobby, userRoom, type AxiomIO } from './realtime';
+import { emitStaff, setIO, examRoom, staffRoom, staffLobby, userRoom, type AxiomIO } from './realtime';
 import { buildExamPublic, getLeaderboard, rearmTimers } from './engine';
 import { resumeAiQueue } from './grading';
 import type { ClientToServerEvents, PublicUser, Role, ServerToClientEvents } from '../shared/types';
@@ -57,7 +57,7 @@ async function main() {
   await ensurePortFree(config.port);
   await cache.init();
   await initMongo();
-  seedIfEmpty();
+  if (!isProd) seedIfEmpty();
   rearmTimers();
   // Evaluations interrupted by a restart pick up where they left off.
   resumeAiQueue();
@@ -68,6 +68,7 @@ async function main() {
 
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', config.trustedProxies);
 
   // Baseline hardening. The UI and API are same-origin, so we can be strict.
   app.use((_req, res, nextFn) => {
@@ -82,6 +83,20 @@ async function main() {
   });
 
   app.use(express.json({ limit: '1mb' }));
+  app.use((req, res, nextFn) => {
+    const origin = req.headers.origin;
+    if (origin && config.allowedOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Vary', 'Origin');
+    }
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(origin && config.allowedOrigins.includes(origin) ? 204 : 403);
+      return;
+    }
+    nextFn();
+  });
   app.use('/api', api);
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
   app.all('*', (req, res) => handle(req, res));
@@ -147,11 +162,28 @@ async function main() {
       // submission — answer text and grade — stream in while the question was
       // still open.
       socket.join(target);
+      socket.data.examCode = exam.code;
       if (role === 'admin') socket.join(staff);
 
       socket.emit('time:sync', { serverTime: Date.now() });
       socket.emit('exam:state', buildExamPublic(exam, user.id));
       socket.emit('leaderboard:update', { examId: exam.id, entries: getLeaderboard(exam.id) });
+    });
+
+    socket.on('student:tab-hidden', (payload) => {
+      if (role !== 'student') return;
+      const examCode = String(payload?.examCode ?? '').trim().toUpperCase();
+      const exam = db.examByCode(examCode);
+      if (!exam || exam.status !== 'live') return;
+      if (socket.data.examCode !== exam.code || !socket.rooms.has(examRoom(exam.code))) return;
+
+      emitStaff(exam.code, 'student:tab-hidden', {
+        examId: exam.id,
+        examCode: exam.code,
+        studentId: user.id,
+        studentName: user.name,
+        hiddenAt: Date.now()
+      });
     });
 
     socket.on('time:sync:request', () => {

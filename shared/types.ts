@@ -113,6 +113,12 @@ export interface Exam {
     endsAt: number;
     locked: boolean;
   } | null;
+  classroomCourseId?: string;
+  classroomCourseName?: string;
+  classroomCourseWorkId?: string;
+  classroomPublishStatus?: 'published' | 'failed';
+  classroomPublishError?: string;
+  classroomPublishedAt?: number;
 }
 
 /** Student-facing view of an exam */
@@ -259,6 +265,14 @@ export interface AdminExamRow extends Exam {
   avgScore: number;
 }
 
+export interface StudentTabHiddenEvent {
+  examId: string;
+  examCode: string;
+  studentId: string;
+  studentName: string;
+  hiddenAt: number;
+}
+
 // ── Socket contracts ───────────────────────────────────────────
 export interface ServerToClientEvents {
   'exam:state': (payload: ExamPublic) => void;
@@ -271,6 +285,8 @@ export interface ServerToClientEvents {
   'response:graded': (payload: { examId: string; response: Response }) => void;
   /** Sent to one student when a late (AI / manual) grade lands on a closed question. */
   'answer:graded': (payload: { examId: string; questionId: string; grade: Grade; awarded: number }) => void;
+  /** Staff only — a student hid the live exam tab. */
+  'student:tab-hidden': (payload: StudentTabHiddenEvent) => void;
   'time:sync': (payload: { serverTime: number }) => void;
   'notice': (payload: { kind: 'info' | 'success' | 'warn'; message: string }) => void;
   'paper:imported': (payload: { paperId: string; name: string; questions: number }) => void;
@@ -278,5 +294,6 @@ export interface ServerToClientEvents {
 
 export interface ClientToServerEvents {
   'join:exam': (payload: { examCode: string; role: Role }) => void;
+  'student:tab-hidden': (payload: { examCode: string }) => void;
   'time:sync:request': () => void;
 }

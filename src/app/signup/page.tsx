@@ -8,13 +8,11 @@ import {
   Building2,
   GraduationCap,
   Mail,
-  Presentation,
   Rocket,
   ShieldCheck,
   User,
   Zap
 } from 'lucide-react';
-import type { Role } from '@shared/types';
 import { AuthAlert, AuthDivider, AuthHeading, AuthShell } from '@/components/auth/AuthShell';
 import { GoogleButton } from '@/components/auth/GoogleButton';
 import { PasswordField, passwordIssues } from '@/components/auth/PasswordField';
@@ -23,34 +21,13 @@ import { Input, Label } from '@/components/ui/Field';
 import { useToast } from '@/components/ui/Toast';
 import { useAuth } from '@/lib/auth';
 import { GoogleSignInError, firebaseConfigured } from '@/lib/firebase';
-import { ApiError, cx } from '@/lib/api';
-
-const ROLE_CARDS: {
-  value: Role;
-  label: string;
-  blurb: string;
-  icon: React.ComponentType<{ className?: string }>;
-}[] = [
-  {
-    value: 'admin',
-    label: 'Faculty',
-    blurb: 'Author questions, run live sessions, read analytics',
-    icon: Presentation
-  },
-  {
-    value: 'student',
-    label: 'Student',
-    blurb: 'Join sessions with a code and answer in real time',
-    icon: GraduationCap
-  }
-];
+import { ApiError } from '@/lib/api';
 
 export default function SignupPage() {
   const router = useRouter();
   const { user, ready, register, loginWithGoogle } = useAuth();
   const { push } = useToast();
 
-  const [role, setRole] = useState<Role>('admin');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [org, setOrg] = useState('');
@@ -103,7 +80,6 @@ export default function SignupPage() {
         name: name.trim(),
         email: email.trim(),
         password,
-        role,
         org: org.trim() || undefined
       });
       land(authed.role, authed.name, true);
@@ -118,8 +94,7 @@ export default function SignupPage() {
     setGoogleBusy(true);
     setError(null);
     try {
-      // The chosen role + institute are applied only if this is a brand-new account.
-      const authed = await loginWithGoogle({ role, org: org.trim() || undefined });
+      const authed = await loginWithGoogle({ org: org.trim() || undefined });
       land(authed.role, authed.name, true);
     } catch (err) {
       if (err instanceof GoogleSignInError && err.cancelled) return;
@@ -143,7 +118,7 @@ export default function SignupPage() {
           <span className="font-display italic text-lime-300">under a minute.</span>
         </>
       }
-      subheading="Create a faculty account to build question banks and run live timed sessions, or a student account to join them. You can switch institutes later."
+      subheading="Create a student account to join live timed sessions. Faculty accounts are provisioned by an institute administrator."
       highlights={[
         { icon: Zap, text: 'Upload a PDF, Word file or photo — questions are extracted for you' },
         { icon: ShieldCheck, text: 'Passwords are hashed with bcrypt; answer keys stay server-side' },
@@ -155,40 +130,16 @@ export default function SignupPage() {
         </p>
       }
     >
-      <AuthHeading title="Join Axiom Live" sub="Pick the role that matches how you will use the platform." />
+      <AuthHeading title="Join Axiom Live" sub="Create a student account to join your institute's live assessments." />
 
-      {/* role picker */}
-      <div className="mb-5 grid gap-2 sm:grid-cols-2">
-        {ROLE_CARDS.map((card) => {
-          const selected = role === card.value;
-          return (
-            <button
-              key={card.value}
-              type="button"
-              onClick={() => setRole(card.value)}
-              aria-pressed={selected}
-              className={cx(
-                'focus-ring rounded-2xl border p-3 text-left transition',
-                selected
-                  ? 'border-aurora-400/50 bg-aurora-500/[0.1]'
-                  : 'border-white/[0.08] bg-white/[0.02] hover:border-white/20'
-              )}
-            >
-              <span
-                className={cx(
-                  'grid h-7 w-7 place-items-center rounded-lg ring-1 ring-inset transition',
-                  selected
-                    ? 'bg-aurora-500/20 text-aurora-100 ring-aurora-400/30'
-                    : 'bg-white/[0.05] text-white/45 ring-white/10'
-                )}
-              >
-                <card.icon className="h-3.5 w-3.5" />
-              </span>
-              <p className="mt-2 text-[12.5px] font-semibold text-white/85">{card.label}</p>
-              <p className="mt-0.5 text-[11px] leading-relaxed text-white/35">{card.blurb}</p>
-            </button>
-          );
-        })}
+      <div className="mb-5 flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3">
+        <span className="grid h-9 w-9 place-items-center rounded-xl bg-aurora-500/20 text-aurora-100">
+          <GraduationCap className="h-4 w-4" />
+        </span>
+        <div>
+          <p className="text-[12.5px] font-semibold text-white/85">Student account</p>
+          <p className="text-[11px] text-white/35">Faculty access is provisioned by your institute administrator.</p>
+        </div>
       </div>
 
       <GoogleButton
@@ -196,7 +147,7 @@ export default function SignupPage() {
         loading={googleBusy}
         disabled={busy}
         configured={firebaseConfigured}
-        label={`Sign up with Google as ${role === 'admin' ? 'faculty' : 'student'}`}
+        label="Sign up with Google as a student"
       />
 
       <AuthDivider label="or use email" />
@@ -210,7 +161,7 @@ export default function SignupPage() {
               id="signup-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder={role === 'admin' ? 'e.g. Dr. Meera Sharma' : 'e.g. Aarav Gupta'}
+              placeholder="e.g. Aarav Gupta"
               className="pl-9"
               required
               autoComplete="name"
@@ -279,7 +230,7 @@ export default function SignupPage() {
           loading={busy}
           disabled={googleBusy || !canSubmit}
         >
-          Create {role === 'admin' ? 'faculty' : 'student'} account
+          Create student account
           {!busy && <ArrowRight className="h-4 w-4" />}
         </Button>
       </form>

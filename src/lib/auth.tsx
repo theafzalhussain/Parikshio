@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import type { PublicUser, Role } from '@shared/types';
+import type { PublicUser } from '@shared/types';
 import { api, setSessionLostHandler, setToken } from './api';
 import { getGoogleIdToken } from './firebase';
 
@@ -9,7 +9,6 @@ export interface RegisterPayload {
   name: string;
   email: string;
   password: string;
-  role: Role;
   org?: string;
 }
 
@@ -23,7 +22,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<PublicUser>;
   register: (payload: RegisterPayload) => Promise<PublicUser>;
   /** Runs the Google popup, exchanges the ID token for an Axiom session. */
-  loginWithGoogle: (opts?: { role?: Role; org?: string }) => Promise<PublicUser>;
+  loginWithGoogle: (opts?: { org?: string }) => Promise<PublicUser>;
   requestPasswordReset: (email: string) => Promise<{ message: string; devLink?: string }>;
   resetPassword: (token: string, password: string) => Promise<PublicUser>;
   changePassword: (currentPassword: string, password: string) => Promise<void>;
@@ -133,12 +132,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loginWithGoogle = useCallback(
-    async (opts?: { role?: Role; org?: string }) => {
+    async (opts?: { org?: string }) => {
       // Popup first — if the user cancels we never touch our own backend.
       const idToken = await getGoogleIdToken();
       const res = await api<SessionResponse & { created: boolean }>('/auth/google', {
         method: 'POST',
-        body: { idToken, role: opts?.role ?? 'student', org: opts?.org },
+        body: { idToken, org: opts?.org },
         skipAuthRedirect: true
       });
       persist(res.token, res.user);

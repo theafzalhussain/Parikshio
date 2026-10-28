@@ -15,7 +15,7 @@ import path from 'node:path';
 const BASE = process.env.BASE_URL ?? 'http://localhost:3000';
 const ADMIN = { email: 'admin@axiom.edu', password: 'admin123' };
 const STUDENT = { email: 'aarav@axiom.edu', password: 'student123' };
-/** Must match config.offlineSyncGraceMs on the server. */
+/** Must match the development server's offline sync allowance. */
 const OFFLINE_GRACE_MS = Number(process.env.OFFLINE_SYNC_GRACE_MS ?? 45_000);
 
 const results = [];
@@ -115,6 +115,14 @@ page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
 
 const bodyText = () => page.locator('body').innerText();
 const toasts = () => page.evaluate(() => window.__toasts ?? []);
+async function refreshQuestion(question) {
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(
+    (prompt) => document.body.innerText.includes(prompt),
+    question.prompt,
+    { timeout: 15_000 }
+  );
+}
 /** Waits until any toast matching `re` has been seen. */
 async function waitForToast(re, timeout = 20_000) {
   const deadline = Date.now() + timeout;
@@ -174,7 +182,12 @@ async function saveOffline(label) {
   await goOffline();
   check(`${label}: offline banner shown`, /You are offline/i.test(await bodyText()));
   const saveButton = page.locator('button:has-text("Save answer")');
-  await saveButton.waitFor({ timeout: 10_000 });
+  try {
+    await saveButton.waitFor({ timeout: 10_000 });
+  } catch (error) {
+    await dump(`${label}-missing-save-button`);
+    throw error;
+  }
   check(`${label}: submit control offers to save locally`, true);
   check(`${label}: an option could be selected`, await pickFirstOption());
   await saveButton.click();
@@ -205,7 +218,7 @@ check('student session established', student?.role === 'student', student?.email
 /* ── 1. offline submit, reconnect while the question is open ── */
 
 console.log('\n1) submit offline · reconnect while the question is still open');
-await push(qHappy.id, 120);
+const happyPush = await push(qHappy.id, 120);
 await page.goto(`${BASE}/student/exam/${exam.code}`, { waitUntil: 'domcontentloaded' });
 await page.locator('button:has-text("Submit answer")').waitFor({ timeout: 25_000 });
 check('live question rendered while online', true);
@@ -241,14 +254,15 @@ const delivered = await serverRows(qHappy.id);
 check('answer delivered after reconnect', delivered.length === 1);
 check('backend flagged it as an offline replay', delivered[0]?.offline === true);
 check(
-  'latency is timed from when the student answered, not from the reconnect',
-  delivered[0] && Math.abs(delivered[0].latencyMs - clientLatency) < 1_500,
-  `server ${delivered[0]?.latencyMs}ms vs device ${clientLatency}ms (reconnect was ${outageMs}ms later)`
+  'latency uses trusted server receipt time, not the client clock',
+  delivered[0] &&
+    Math.abs(delivered[0].latencyMs - (delivered[0].submittedAt - happyPush.active.pushedAt)) < 1,
+  `latency ${delivered[0]?.latencyMs}ms; client claimed ${clientLatency}ms`
 );
 check(
-  'the reconnect delay was not charged to the student',
-  delivered[0] && delivered[0].syncedAt - delivered[0].submittedAt >= outageMs - 1_000,
-  `${delivered[0] ? delivered[0].syncedAt - delivered[0].submittedAt : '?'}ms between answering and delivery`
+  'untrusted client time cannot hide the reconnect delay',
+  delivered[0] && delivered[0].latencyMs >= clientLatency + outageMs - 1_500,
+  `server latency ${delivered[0]?.latencyMs}ms; reconnect was ${outageMs}ms later`
 );
 check('outbox emptied', (await outbox()).length === 0);
 check('UI switched to the recorded state', /Answer recorded/i.test(await bodyText()));
@@ -257,6 +271,7 @@ check('UI switched to the recorded state', /Answer recorded/i.test(await bodyTex
 
 console.log('\n2) submit offline · reconnect after the timer expired, inside the offline allowance');
 await push(qLate.id, 5);
+await refreshQuestion(qLate);
 await page.waitForTimeout(1_200);
 await saveOffline('late sync');
 check('late answer queued', (await outbox()).length === 1);
@@ -277,12 +292,13 @@ check('late record cleared from the outbox', (await outbox()).length === 0);
 /* ── 3. reconnect far too late — refused, and said so ───────── */
 
 console.log('\n3) submit offline · reconnect long after the allowance expired');
-await push(qStale.id, 5);
+await push(qStale.id, 30);
+await refreshQuestion(qStale);
 await page.waitForTimeout(1_200);
 await saveOffline('stale sync');
 check('answer queued before the long outage', (await outbox()).length === 1);
 
-const longOutage = OFFLINE_GRACE_MS + 13_000;
+const longOutage = 30_000 + OFFLINE_GRACE_MS + 13_000;
 console.log(`     waiting ${Math.round(longOutage / 1000)}s offline…`);
 await sleep(longOutage);
 await goOnline();
@@ -300,6 +316,7 @@ check(
 
 console.log('\n4) a typed answer survives a page reload');
 await push(qDraft.id, 600);
+await refreshQuestion(qDraft);
 await page.waitForTimeout(2_000);
 const field = page.locator('textarea.input-base, input.input-base').first();
 try {
@@ -326,6 +343,7 @@ if (await field.count()) {
 
 console.log('\n5) a normal online submission still behaves exactly as before');
 await push(qOnline.id, 120);
+await refreshQuestion(qOnline);
 await page.waitForTimeout(1_500);
 const submitButton = page.locator('button:has-text("Submit answer")');
 await submitButton.waitFor({ timeout: 15_000 });
@@ -397,6 +415,7 @@ await lockedCtx.close();
 
 console.log('\n7) a typed (non-multiple-choice) answer submitted offline');
 await push(qTyped.id, 120);
+await refreshQuestion(qTyped);
 await page.waitForTimeout(1_500);
 const typedField = page.locator('textarea.input-base, input.input-base').first();
 await typedField.waitFor({ timeout: 15_000 });

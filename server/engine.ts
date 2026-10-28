@@ -208,11 +208,6 @@ export type SubmitResult =
 export interface SubmitPayload {
   questionId: string;
   answer: string;
-  /**
-   * Epoch ms (server clock, as synced over the socket) at which the student
-   * pressed submit. Only honoured together with `offline`.
-   */
-  clientSubmittedAt?: number;
   /** The answer was held in the device's offline outbox and is being replayed. */
   offline?: boolean;
 }
@@ -296,15 +291,8 @@ export function submitAnswer(exam: Exam, student: PublicUser, payload: SubmitPay
   if (duplicate)
     return { ok: false, code: 409, error: 'You already answered this question', reason: 'duplicate' };
 
-  // An offline replay is timed by when the student committed the answer, not by
-  // when the network finally let it through — otherwise every reconnect would
-  // look like the slowest answer in the room. The claim is clamped into the
-  // question's own window so a tampered clock cannot buy a better tiebreak.
-  const claimed = Number(payload.clientSubmittedAt);
-  const answeredAt =
-    payload.offline === true && Number.isFinite(claimed)
-      ? Math.min(Math.max(claimed, pushedAt), endsAt + config.graceMs)
-      : Math.min(now, endsAt + config.graceMs);
+  // Client clocks are untrusted; score latency using the server's receipt time.
+  const answeredAt = Math.min(now, endsAt + config.graceMs);
 
   // Dual-mode grading: objective formats are settled by the answer key right
   // here; subjective ones are handed to the AI evaluator and start as pending.

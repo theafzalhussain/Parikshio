@@ -14,6 +14,17 @@ import {
   type BulkScope
 } from './grading';
 import { GeminiError } from './gemini';
+import {
+  classroomStatus,
+  createClassroomAuthorizationUrl,
+  discardClassroomAuthorization,
+  disconnectClassroom,
+  finishClassroomAuthorization,
+  getClassroomCourse,
+  listClassroomCourses,
+  listClassroomRoster,
+  publishExamResults
+} from './googleClassroom';
 import { isSubjective } from '../shared/grade';
 import {
   authenticate,
@@ -46,6 +57,7 @@ import {
   resetPasswordLimiter
 } from './security';
 import { db, examCode, store, uid, type PasswordReset, type StoredUser } from './store';
+import { DEMO_ACCOUNT_EMAILS, isDemoAccountEmail } from './demoAccounts';
 import { persist, unpersist, mongoReady } from './mongo';
 import { cache, cacheKeys } from './cache';
 import type { Exam } from '../shared/types';
@@ -91,6 +103,13 @@ function sanitiseEmail(value: unknown): string {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const classroomLimiter = createRateLimiter({
+  name: 'google-classroom',
+  windowMs: 60_000,
+  max: 20,
+  keyFor: (req) => (req as AuthedRequest).user?.id ?? clientIp(req),
+  message: 'Too many Google Classroom requests — wait a minute and try again.'
+});
 
 api.post('/auth/login', loginIpGuard, loginEmailGuard, (req, res) => {
   const email = sanitiseEmail(req.body?.email);
@@ -100,6 +119,17 @@ api.post('/auth/login', loginIpGuard, loginEmailGuard, (req, res) => {
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
 
   const user = db.userByEmail(email);
+  if (isProd && isDemoAccountEmail(email)) {
+    penaliseLogin(ip, email);
+    recordAudit({
+      action: 'auth.login_failed',
+      actorId: user?.id ?? null,
+      actorName: email,
+      detail: 'unavailable demo account',
+      ip
+    });
+    return res.status(401).json({ error: 'Incorrect email or password.' });
+  }
   if (!user || !verifyPassword(password, user.passwordHash)) {
     // Only wrong credentials advance the throttle — successful sign-ins are free,
     // so a classroom sharing one IP never locks itself out.
@@ -146,8 +176,8 @@ api.get('/auth/me', authenticate, (req: AuthedRequest, res) => {
 api.get('/auth/demo', (_req, res) => {
   if (isProd) return res.status(404).json({ error: 'Not found' });
   res.json({
-    admin: { email: 'admin@axiom.edu', password: 'admin123' },
-    student: { email: 'aarav@axiom.edu', password: 'student123' }
+    admin: { email: DEMO_ACCOUNT_EMAILS.admin, password: 'admin123' },
+    student: { email: DEMO_ACCOUNT_EMAILS.aarav, password: 'student123' }
   });
 });
 
@@ -156,16 +186,140 @@ api.get('/auth/providers', (_req, res) => {
   res.json({ google: config.firebase.enabled, password: true });
 });
 
+// ── Google Classroom ───────────────────────────────────────────
+api.get('/classroom/status', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+  const user = db.userById(req.user!.id);
+  if (!user) return res.status(401).json({ error: 'Faculty account is no longer available.' });
+  res.json({ classroom: classroomStatus(user) });
+});
+
+api.post('/classroom/oauth/start', authenticate, requireRole('admin'), classroomLimiter, (req: AuthedRequest, res) => {
+  const user = db.userById(req.user!.id);
+  if (!user) return res.status(401).json({ error: 'Faculty account is no longer available.' });
+  const examId = String(req.body?.examId ?? '');
+  const exam = examId ? db.examById(examId) : undefined;
+  if (examId && (!exam || exam.adminId !== user.id)) {
+    return res.status(404).json({ error: 'Exam not found.' });
+  }
+  const returnTo = exam ? `/admin/exams/${encodeURIComponent(exam.id)}` : '/admin/exams';
+  try {
+    return res.json({ authorizationUrl: createClassroomAuthorizationUrl(user, returnTo) });
+  } catch (error) {
+    return res.status(503).json({ error: error instanceof Error ? error.message : 'Google Classroom is unavailable.' });
+  }
+});
+
+api.get('/classroom/oauth/callback', asyncRoute(async (req: AuthedRequest, res) => {
+  const state = String(req.query.state ?? '');
+  const providerError = String(req.query.error ?? '');
+  if (providerError) {
+    const pending = discardClassroomAuthorization(state);
+    const base = config.appBaseUrl || `http://localhost:${config.port}`;
+    return res.redirect(`${base}${pending?.returnTo ?? '/admin/exams'}?classroom=denied`);
+  }
+  try {
+    const pending = await finishClassroomAuthorization(state, String(req.query.code ?? ''));
+    const base = config.appBaseUrl || `http://localhost:${config.port}`;
+    return res.redirect(`${base}${pending.returnTo}?classroom=connected`);
+  } catch (error) {
+    console.warn('[classroom] OAuth callback failed:', error instanceof Error ? error.message : 'unknown error');
+    const base = config.appBaseUrl || `http://localhost:${config.port}`;
+    return res.redirect(`${base}/admin/exams?classroom=error`);
+  }
+}));
+
+api.post('/classroom/disconnect', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+  const user = db.userById(req.user!.id);
+  if (!user) return res.status(401).json({ error: 'Faculty account is no longer available.' });
+  disconnectClassroom(user);
+  res.json({ classroom: classroomStatus(user) });
+});
+
+api.get('/classroom/courses', authenticate, requireRole('admin'), classroomLimiter, asyncRoute(async (req: AuthedRequest, res) => {
+  const user = db.userById(req.user!.id);
+  if (!user) return res.status(401).json({ error: 'Faculty account is no longer available.' });
+  res.json({ courses: await listClassroomCourses(user) });
+}));
+
+api.post('/exams/:id/classroom/course', authenticate, requireRole('admin'), classroomLimiter, asyncRoute(async (req: AuthedRequest, res) => {
+  const exam = db.examById(req.params.id);
+  if (!exam || exam.adminId !== req.user!.id) return res.status(404).json({ error: 'Exam not found.' });
+  if (exam.classroomCourseWorkId) {
+    return res.status(409).json({ error: 'This exam already has a Classroom coursework item; keep the existing course link for safe retries.' });
+  }
+  const courseId = String(req.body?.courseId ?? '').trim().slice(0, 256);
+  if (!courseId) return res.status(400).json({ error: 'Select a Google Classroom course.' });
+  const user = db.userById(req.user!.id);
+  if (!user) return res.status(401).json({ error: 'Faculty account is no longer available.' });
+  const course = await getClassroomCourse(user, courseId);
+  if (!course) return res.status(404).json({ error: 'That active course is not available to the connected teacher.' });
+  exam.classroomCourseId = course.id;
+  exam.classroomCourseName = course.section ? `${course.name} · ${course.section}` : course.name;
+  exam.classroomPublishStatus = undefined;
+  exam.classroomPublishError = undefined;
+  exam.classroomPublishedAt = undefined;
+  persist('exams', asPersistable(exam));
+  res.json({ exam });
+}));
+
+api.post('/exams/:id/classroom/sync-roster', authenticate, requireRole('admin'), classroomLimiter, asyncRoute(async (req: AuthedRequest, res) => {
+  const exam = db.examById(req.params.id);
+  if (!exam || exam.adminId !== req.user!.id) return res.status(404).json({ error: 'Exam not found.' });
+  if (!exam.classroomCourseId) return res.status(409).json({ error: 'Link a Google Classroom course to this exam first.' });
+  const user = db.userById(req.user!.id);
+  if (!user) return res.status(401).json({ error: 'Faculty account is no longer available.' });
+  const roster = await listClassroomRoster(user, exam.classroomCourseId);
+  const studentsByEmail = new Map(
+    store.users.filter((student) => student.role === 'student').map((student) => [student.email.toLowerCase(), student])
+  );
+  const syncedRoster = roster.map((student) => ({
+    ...student,
+    studentId: studentsByEmail.get(student.email)?.id ?? null
+  }));
+  res.json({
+    courseId: exam.classroomCourseId,
+    courseName: exam.classroomCourseName,
+    roster: syncedRoster,
+    matchedCount: syncedRoster.filter((student) => student.studentId).length,
+    unmatchedCount: syncedRoster.filter((student) => !student.studentId).length
+  });
+}));
+
+api.post('/exams/:id/classroom/publish-results', authenticate, requireRole('admin'), classroomLimiter, asyncRoute(async (req: AuthedRequest, res) => {
+  const exam = db.examById(req.params.id);
+  if (!exam || exam.adminId !== req.user!.id) return res.status(404).json({ error: 'Exam not found.' });
+  try {
+    const result = await publishExamResults(exam);
+    exam.classroomPublishStatus = 'published';
+    exam.classroomPublishError = undefined;
+    exam.classroomPublishedAt = result.publishedAt;
+    persist('exams', asPersistable(exam));
+    res.json({ classroom: result, exam });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not publish Google Classroom results.';
+    exam.classroomPublishStatus = 'failed';
+    exam.classroomPublishError = message.slice(0, 500);
+    persist('exams', asPersistable(exam));
+    res.status(502).json({ error: message, classroom: { status: 'failed' } });
+  }
+}));
+
 api.post('/auth/register', registerLimiter, (req, res) => {
   const name = sanitiseName(req.body?.name, '');
   const email = sanitiseEmail(req.body?.email);
   const password = String(req.body?.password ?? '');
-  const role = req.body?.role === 'admin' ? ('admin' as const) : ('student' as const);
+  if (req.body?.role === 'admin') {
+    return res.status(403).json({ error: 'Faculty accounts must be provisioned by an administrator.' });
+  }
+  const role = 'student' as const;
   const org = sanitiseName(req.body?.org, 'Axiom Institute');
   const ip = clientIp(req);
 
   if (!name) return res.status(400).json({ error: 'Full name is required' });
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
+  if (isProd && isDemoAccountEmail(email)) {
+    return res.status(409).json({ error: 'This email is not available for public registration.' });
+  }
   const weak = passwordProblem(password);
   if (weak) return res.status(400).json({ error: weak });
   if (db.userByEmail(email)) {
@@ -173,7 +327,7 @@ api.post('/auth/register', registerLimiter, (req, res) => {
   }
 
   const user: StoredUser = {
-    id: uid(role === 'admin' ? 'usr_' : 'stu_'),
+    id: uid('stu_'),
     name,
     email,
     role,
@@ -204,6 +358,9 @@ api.post('/auth/register', registerLimiter, (req, res) => {
  */
 api.post('/auth/google', googleLimiter, asyncRoute(async (req, res) => {
   const ip = clientIp(req);
+  if (req.body?.role === 'admin') {
+    return res.status(403).json({ error: 'Faculty accounts must be provisioned by an administrator.' });
+  }
   if (!config.firebase.enabled) {
     return res.status(503).json({
       error: 'Google sign-in is not configured on this server yet.',
@@ -219,17 +376,27 @@ api.post('/auth/google', googleLimiter, asyncRoute(async (req, res) => {
   }
 
   const { googleId, email, name, picture, emailVerified } = verified.identity;
-  const requestedRole = req.body?.role === 'admin' ? ('admin' as const) : ('student' as const);
+
+  if (isProd && isDemoAccountEmail(email)) {
+    recordAudit({
+      action: 'auth.google_failed',
+      actorId: null,
+      actorName: email,
+      detail: 'unavailable demo account',
+      ip
+    });
+    return res.status(403).json({ error: 'This account is not available.' });
+  }
 
   let user = db.userByGoogleId(googleId) ?? db.userByEmail(email);
   let created = false;
 
   if (!user) {
     user = {
-      id: uid(requestedRole === 'admin' ? 'usr_' : 'stu_'),
+      id: uid('stu_'),
       name: sanitiseName(name, email.split('@')[0]),
       email,
-      role: requestedRole,
+      role: 'student',
       org: sanitiseName(req.body?.org, 'Axiom Institute'),
       // No password — this account signs in with Google only until it sets one.
       passwordHash: '',
@@ -302,12 +469,7 @@ api.post('/auth/forgot-password', forgotPasswordLimiter, forgotPasswordEmailLimi
 
   const link = `/reset-password?token=${token}&email=${encodeURIComponent(user.email)}`;
 
-  // Build an absolute URL for the email. Prefer the configured APP_URL; fall
-  // back to the request's own origin so it works even if APP_URL is unset.
-  const origin =
-    config.appBaseUrl ||
-    `${(req.headers['x-forwarded-proto'] as string) || req.protocol}://${req.get('host') ?? `localhost:${config.port}`}`;
-  const resetUrl = `${origin}${link}`;
+  const resetUrl = `${config.appBaseUrl || `${req.protocol}://${req.get('host') ?? `localhost:${config.port}`}`}${link}`;
 
   // Deliver the link by email when Brevo is configured (dev or prod).
   if (emailEnabled()) {
@@ -1014,12 +1176,27 @@ api.post('/exams/:id/lock', authenticate, requireRole('admin'), (req: AuthedRequ
   res.json({ ok: true, active: activeWindow(exam) });
 });
 
-api.post('/exams/:id/end', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+api.post('/exams/:id/end', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
   const exam = db.examById(req.params.id);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   endExam(exam);
-  res.json({ ok: true, exam });
-});
+  let classroom: Awaited<ReturnType<typeof publishExamResults>> | { status: 'failed'; error: string } | undefined;
+  if (exam.classroomCourseId && exam.adminId === req.user!.id) {
+    try {
+      classroom = await publishExamResults(exam);
+      exam.classroomPublishStatus = 'published';
+      exam.classroomPublishError = undefined;
+      exam.classroomPublishedAt = classroom.publishedAt;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not publish Google Classroom results.';
+      classroom = { status: 'failed', error: message };
+      exam.classroomPublishStatus = 'failed';
+      exam.classroomPublishError = message.slice(0, 500);
+    }
+    persist('exams', asPersistable(exam));
+  }
+  res.json({ ok: true, exam, ...(classroom ? { classroom } : {}) });
+}));
 
 api.get('/exams/:id/analytics', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
   const exam = db.examById(req.params.id);
@@ -1220,17 +1397,14 @@ api.get('/student/exams/by-code/:code', authenticate, requireRole('student'), (r
 });
 
 api.post('/student/answers', authenticate, requireRole('student'), asyncRoute(async (req: AuthedRequest, res) => {
-  const { examId, questionId, answer, clientSubmittedAt, offline } = req.body ?? {};
+  const { examId, questionId, answer, offline } = req.body ?? {};
   const exam = db.examById(String(examId));
   if (!exam) return res.status(404).json({ error: 'Exam not found', code: 'exam-missing' });
   const { submitAnswer } = await import('./engine');
   const result = submitAnswer(exam, req.user!, {
     questionId: String(questionId),
     answer: String(answer ?? ''),
-    // Set by the student device when replaying an answer its offline outbox held
-    // while the network was down.
-    offline: offline === true,
-    clientSubmittedAt: Number(clientSubmittedAt)
+    offline: offline === true
   });
   // The reason code lets the device decide whether to retry or drop the record,
   // instead of pattern-matching the human-readable message.

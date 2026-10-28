@@ -148,6 +148,8 @@ const footerColumns = [
 ];
 
 export default function LandingPage() {
+  const showDemoAccounts = process.env.NODE_ENV !== 'production';
+
   return (
     <div className="relative min-h-screen overflow-hidden">
       {/*
@@ -512,21 +514,27 @@ export default function LandingPage() {
         <section className="defer-paint mx-auto max-w-7xl px-5 pb-20 sm:px-8">
           <div className="relative overflow-hidden rounded-4xl border border-white/[0.09] bg-gradient-to-br from-aurora-600/25 via-ink-880 to-mint-600/10 p-8 sm:p-12">
             <div className="absolute inset-0 dot-veil opacity-40" />
-            <div className="relative grid items-center gap-8 lg:grid-cols-[1.2fr_0.8fr]">
+            <div
+              className={cx(
+                'relative grid items-center gap-8',
+                showDemoAccounts ? 'lg:grid-cols-[1.2fr_0.8fr]' : 'lg:grid-cols-1'
+              )}
+            >
               <div>
-                <LivePill label="demo ready" />
+                <LivePill label={showDemoAccounts ? 'demo ready' : 'live sessions'} />
                 <h2 className="mt-4 text-[1.9rem] font-semibold leading-tight tracking-[-0.02em] text-white sm:text-[2.4rem]">
                   Open the console. Push a question.
                   <br />
                   <span className="font-display italic text-lime-300">Watch the room answer.</span>
                 </h2>
                 <p className="mt-3 max-w-lg text-[13px] leading-relaxed text-white/50">
-                  Two demo logins are seeded with a live session, a question bank and a cohort of results — so you can
-                  see the whole loop working in under a minute.
+                  {showDemoAccounts
+                    ? 'Two demo logins are seeded with a live session, a question bank and a cohort of results — so you can see the whole loop working in under a minute.'
+                    : 'Create a student account or sign in with your institute credentials to access live assessment sessions.'}
                 </p>
                 <div className="mt-7 flex flex-wrap gap-3">
-                  <LinkButton href="/login" size="lg" variant="lime">
-                    Enter the demo
+                  <LinkButton href={showDemoAccounts ? '/login' : '/signup'} size="lg" variant="lime">
+                    {showDemoAccounts ? 'Enter the demo' : 'Create a student account'}
                     <ArrowRight className="h-4 w-4" />
                   </LinkButton>
                   <Link
@@ -537,19 +545,21 @@ export default function LandingPage() {
                   </Link>
                 </div>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-ink-950/60 p-4 backdrop-blur-xl">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-white/35">demo credentials</p>
-                <div className="mt-3 space-y-2.5">
-                  <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
-                    <p className="text-[11px] uppercase tracking-[0.12em] text-aurora-200">admin</p>
-                    <p className="mt-1 font-mono text-[11.5px] text-white/70">admin@axiom.edu · admin123</p>
-                  </div>
-                  <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
-                    <p className="text-[11px] uppercase tracking-[0.12em] text-mint-300">student</p>
-                    <p className="mt-1 font-mono text-[11.5px] text-white/70">aarav@axiom.edu · student123</p>
+              {showDemoAccounts && (
+                <div className="rounded-2xl border border-white/10 bg-ink-950/60 p-4 backdrop-blur-xl">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-white/35">demo credentials</p>
+                  <div className="mt-3 space-y-2.5">
+                    <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+                      <p className="text-[11px] uppercase tracking-[0.12em] text-aurora-200">admin</p>
+                      <p className="mt-1 font-mono text-[11.5px] text-white/70">admin@axiom.edu · admin123</p>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+                      <p className="text-[11px] uppercase tracking-[0.12em] text-mint-300">student</p>
+                      <p className="mt-1 font-mono text-[11.5px] text-white/70">aarav@axiom.edu · student123</p>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </section>

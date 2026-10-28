@@ -11,12 +11,13 @@ export type AxiomSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
  * One socket per browser tab (singleton) — reconnects automatically.
  */
 let singleton: AxiomSocket | null = null;
+const API_ORIGIN = (process.env.NEXT_PUBLIC_API_URL ?? '').trim().replace(/\/+$/, '');
 
 export function getSocket(): AxiomSocket {
   const token = getToken() ?? '';
   if (singleton && (singleton.auth as { token?: string })?.token === token) return singleton;
   singleton?.disconnect();
-  singleton = io({
+  singleton = io(API_ORIGIN || undefined, {
     auth: { token },
     transports: ['websocket', 'polling'],
     reconnection: true,

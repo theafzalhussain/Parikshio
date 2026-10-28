@@ -238,7 +238,6 @@ async function deliver(record: PendingAnswer): Promise<Verdict> {
         examId: record.examId,
         questionId: record.questionId,
         answer: record.answer,
-        clientSubmittedAt: record.clientSubmittedAt,
         offline: true
       }
     });

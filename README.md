@@ -33,9 +33,11 @@ npm install
 npm run dev          # http://localhost:3000
 ```
 
-That is enough — the server boots with a seeded demo: 19 hand-written + 7 paper-imported questions, 3 sessions, 8 students and a live session in progress.
+That is enough — in development, the server boots with a seeded demo: 19 hand-written + 7 paper-imported questions, 3 sessions, 8 students and a live session in progress. Production never seeds demo accounts or assessment data.
 
 ### Demo logins
+
+These accounts are development-only and are not created in production. Production login, Google linking, and public signup also reject these reserved demo email addresses, including when a database was seeded by an older development deployment.
 
 | Role | Email | Password |
 | --- | --- | --- |
@@ -92,6 +94,7 @@ analyse workflow:
 | **Per-question controls in the panel** | Each row carries inline **timer**, **Push**, **Edit**, **Delete** — on the paper workbench (`/admin/papers/[id]`) and in the question bank |
 | Redis caching | `server/cache.ts` — leaderboard + analytics cached with TTL, prefix invalidation on every mutation |
 | MongoDB | `server/mongo.ts` — write-through mirror + hydrate on boot |
+| Google Classroom | Teacher OAuth, roster-to-account email matching, exam course mapping and score publishing from the admin control room |
 
 ---
 
@@ -173,8 +176,8 @@ GET    /api/health
 
 ### Socket contracts (`shared/types.ts`)
 
-Server → client: `exam:state`, `question:pushed`, `question:locked`, `exam:ended`, `leaderboard:update`, `response:new` (staff only), `time:sync`, `notice`
-Client → server: `join:exam`, `time:sync:request`
+Server → client: `exam:state`, `question:pushed`, `question:locked`, `exam:ended`, `leaderboard:update`, `response:new` (staff only), `student:tab-hidden` (staff only), `time:sync`, `notice`
+Client → server: `join:exam`, `student:tab-hidden`, `time:sync:request`
 
 ---
 
@@ -188,11 +191,31 @@ Client → server: `join:exam`, `time:sync:request`
 5. Push a **long answer** question — it lands in the review queue; score it from the feed and watch the leaderboard change.
 6. Open **Analytics** for the same session: per-question accuracy, option distribution, latency histogram, CSV export.
 
+During a live session, the Student interface discloses that hiding the exam tab sends a real-time alert to the session's Admin control room. The alert's student ID is derived from the authenticated Socket.io session; this is a visibility signal, not proof of misconduct or a substitute for in-person proctoring.
+
+### Google Classroom integration
+
+1. In Google Cloud Console, enable the **Google Classroom API**, configure the OAuth consent screen, and create an OAuth 2.0 **Web application** client.
+2. Add the exact redirect URI `https://<your-app-origin>/api/classroom/oauth/callback` (local development: `http://localhost:3000/api/classroom/oauth/callback`) to that client.
+3. Configure `GOOGLE_CLASSROOM_CLIENT_ID` and `GOOGLE_CLASSROOM_CLIENT_SECRET` in the server environment. Never expose the client secret in browser code or commit it.
+4. Open an exam's Admin control room, connect the faculty Google account, select and link the corresponding course, and use **Sync roster** to review email matches. Only existing Axiom student accounts are matched; Classroom roster sync does not create accounts.
+5. Once linked, ending the exam automatically creates one Classroom coursework item and posts the total scores of matched students who participated in the exam. If publication fails, the control room displays the failure and offers a retry. The coursework item is created as part of the one-time publish flow; changing a course after publication is blocked to prevent duplicate assignments.
+
+Google's OAuth consent configuration and Classroom access policies determine which courses and roster details are available. Live publication requires a correctly configured teacher account and course; local automated tests cannot verify an external Google account.
+
 ---
 
 ## 6. Production notes
 
-* Set `JWT_SECRET`, `MONGODB_URI`, `REDIS_URL`; run `npm run build && npm start`.
+* Set `JWT_SECRET`, `APP_URL` (the public HTTPS origin), `MONGODB_URI`, and `REDIS_URL`; run `npm run build && npm start`. Production refuses to boot without a valid `APP_URL`.
+* Split hosting (Vercel UI + Render API) is supported. Set `NEXT_PUBLIC_API_URL` in Vercel to the Render service URL, and set `ALLOWED_ORIGINS` in Render to the Vercel origin(s). The Render service must remain a Web Service because Socket.io requires a long-lived Node process; do not deploy the API as a serverless function.
+* Render Web Service commands: build `npm ci && npm run build`, start `npm start`, health check `/healthz`. Set the service root directory to this project directory if the repository contains multiple apps.
+* Vercel project settings: framework **Next.js**, root directory this project directory, and the normal Next.js build command. Vercel serves the UI; the custom Express server in `server/index.ts` runs only on Render.
+* For Google Classroom in split hosting, keep `APP_URL` on Render equal to the Render backend URL and register `https://<render-host>/api/classroom/oauth/callback` in Google Cloud. Keep `GOOGLE_CLASSROOM_CLIENT_SECRET` on Render only.
+* Public signup creates student accounts only. Faculty/admin accounts must be provisioned through a trusted operational process; the public signup and Google signup endpoints cannot grant admin access.
+* Production does not seed demo users or sample assessments. Provision the first faculty account and any required initial data through a trusted operational process.
+* Offline answers are stored on the device and sync when connectivity returns, but production accepts them only while the question is open (plus the existing short in-flight grace); client-reported answer times are never trusted for scoring.
+* If deployed behind a reverse proxy, set `TRUSTED_PROXIES` to its exact IP address or CIDR range(s). Leave it blank when there is no trusted proxy; forwarded IP headers are ignored by default.
 * Horizontal scale: run N app instances behind a load balancer with a **Socket.io Redis adapter** (`@socket.io/redis-adapter`) so rooms span instances — the cache layer already speaks Redis.
 * The in-memory hot path is single-process by design (seed data + live exam state). For multi-instance deployments move `store` reads to Mongo/Redis behind the same `db.*` interface — the call sites are already isolated in `server/store.ts`.
 * Hardening checklist: rate-limit `/api/auth/*`, add refresh tokens, audit-log `push`/`grade` actions, and lock CORS to your institute domain.
