@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { cx } from '@/lib/api';
 
-export function LogoMark({ className = 'h-9 w-9', accent = '#CBFF3D' }: { className?: string; accent?: string }) {
+export function LogoMark({ className = 'h-9 w-9', accent = '#E4C98F' }: { className?: string; accent?: string }) {
   return (
     <svg viewBox="0 0 40 40" className={className} aria-hidden="true">
       <defs>
