@@ -124,7 +124,8 @@ const footerColumns = [
   {
     title: 'Product',
     links: [
-      ['Admin console', '/admin'],
+  ['About Parikshio', '/about'],
+  ['Admin console', '/admin'],
       ['Student mode', '/student'],
       ['Live demo', '/login']
     ]
@@ -201,7 +202,7 @@ export default function LandingPage() {
               </h1>
 
               <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-white/55 sm:text-base">
-                Axiom Live is the real-time assessment OS for institutes. Author any question type, push it to every
+                Parikshio is the real-time assessment platform for institutes. Author any question type, push it to every
                 student device with a server-authoritative timer, capture timestamped answers as they land — and watch
                 auto-graded results rank themselves.
               </p>
@@ -220,7 +221,7 @@ export default function LandingPage() {
                   <p className="text-[12px] leading-tight text-white/40">
                     <span className="font-medium text-white/70">8 pilot institutes</span>
                     <br />
-                    running Axiom this semester
+                    running Parikshio this semester
                   </p>
                 </div>
                 <Divider className="hidden h-8 w-px bg-white/10 sm:block" />
@@ -594,7 +595,7 @@ export default function LandingPage() {
         </div>
         <div className="border-t border-white/[0.05] px-5 py-5 sm:px-8">
           <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-[11.5px] text-white/25">
-            <p>© {new Date().getFullYear()} Axiom Live. Built for real classrooms.</p>
+            <p>© {new Date().getFullYear()} Parikshio. Built for real classrooms.</p>
             <p className="font-mono">Next.js · Express · MongoDB · Redis · Socket.io</p>
           </div>
         </div>

@@ -1,21 +1,20 @@
-# ⬢ Axiom Live (Parikshio)
+# ⬢ Parikshio
 
 > A real-time assessment OS for institutes: author questions, run timed live
 > sessions, capture answers as they arrive, and turn them into actionable
 > analytics.
 
-Parikshio is the repository for **Axiom Live**, a production-shaped
-educational testing platform for faculty and students. It combines an admin
-control room with a focused student experience and a server-authoritative
-real-time assessment engine.
+Parikshio is a production-shaped educational testing platform for faculty and
+students. It combines an admin control room with a focused student experience
+and a server-authoritative real-time assessment engine.
+
+**Website:** [www.parikshio.tech](https://www.parikshio.tech/)
 
 Stack: **Next.js 14 + TypeScript + Tailwind CSS** · **Node.js + Express** · **MongoDB** · **Redis** · **Socket.io**
 
-> **Repository note:** the GitHub repository is named `Parikshio`; the product
-> shown in the UI and application metadata is named **Axiom Live**.
-
 ## Contents
 
+- [About Parikshio](#about-parikshio)
 - [Run it](#1-run-it)
 - [What it includes](#2-what-it-includes)
 - [Upload a question paper](#3-upload-your-own-question-paper-pdf--word--photo)
@@ -23,6 +22,20 @@ Stack: **Next.js 14 + TypeScript + Tailwind CSS** · **Node.js + Express** · **
 - [Try the real-time loop](#5-try-the-real-time-loop-in-60-seconds)
 - [Production notes](#6-production-notes)
 - [Project map](#7-project-map)
+
+---
+
+## About Parikshio
+
+Parikshio helps schools, coaching institutes and educators run faster,
+fairer and more measurable assessments. Teachers can create question banks,
+upload papers, launch timed live exams and monitor responses in real time.
+Students get a focused, mobile-friendly exam experience, while institute teams
+get instant grading, rankings and analytics that make learning gaps easier to
+spot.
+
+Parikshio is designed around one simple workflow: **create → deliver → grade →
+improve**. Learn more at [parikshio.tech](https://www.parikshio.tech/).
 
 ---
 
@@ -239,7 +252,7 @@ to `main`; no deploy command or manual upload is needed.
 
 | Render — Web Service | Value |
 | --- | --- |
-| `APP_URL` | the public HTTPS origin, e.g. `https://your-app.onrender.com` — HTTPS is required in production |
+| `APP_URL` | the public HTTPS origin, e.g. `https://www.parikshio.tech` — HTTPS is required in production |
 | `ALLOWED_ORIGINS` | every Vercel origin that must reach the API, comma-separated (production + preview) |
 | `JWT_SECRET` · `MONGODB_URI` · `REDIS_URL` | session signing key and backing stores |
 | `GEMINI_API_KEY` | AI grading; leave unset to fall back to answer-key / manual review |

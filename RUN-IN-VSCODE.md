@@ -1,4 +1,4 @@
-# Axiom Live — VS Code me kaise run karein
+# Parikshio — VS Code me kaise run karein
 
 Bhai, neeche exact steps hain. Total time: **~2 minute** (pehli baar `npm install` me 1–2 min lagta hai).
 
@@ -56,7 +56,7 @@ npm run dev
 Terminal me ye dikhna chahiye:
 
 ```
-  ⬢  Axiom Live  ·  http://localhost:3000
+  ⬢  Parikshio  ·  http://localhost:3000
      engine: development  ·  boot 2522ms
      mongo:  ephemeral (no MONGODB_URI)
      redis:  memory-fallback
@@ -82,12 +82,12 @@ Live session join code: **`QM4LIVE`** ya **`DSA2026`**
 
 `.vscode/` folder project me included hai, isliye:
 
-- **F5** → *Axiom Live · dev* launch (debugger attached + browser khud khulta hai)
+- **F5** → *Parikshio · dev* launch (debugger attached + browser khud khulta hai)
 - **Ctrl + Shift + B** → tasks menu: `dev: start server`, `check: typecheck`, `next: build`, `infra: mongo + redis`
 - Extensions install karne ka suggestion VS Code khud dega (Tailwind, Prettier, ESLint, Error Lens)
 
 Run/Debug panel (Ctrl+Shift+D) me 4 configs ready hain:
-1. `Axiom Live · dev (Next.js + Express + Socket.io)` ← ye use karo
+1. `Parikshio · dev (Next.js + Express + Socket.io)` ← ye use karo
 2. `dev (watch mode)`
 3. `production build & run`
 4. `Attach to server (port 9229)`

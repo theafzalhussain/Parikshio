@@ -354,8 +354,8 @@ async function publishExamResultsOnce(exam: Exam): Promise<ClassroomPublishResul
       {
         method: 'POST',
         body: {
-          title: `${exam.title} — Axiom Live results`,
-          description: `Final scores from the Axiom Live ${exam.subject} assessment.`,
+          title: `${exam.title} — Parikshio results`,
+          description: `Final scores from the Parikshio ${exam.subject} assessment.`,
           workType: 'ASSIGNMENT',
           state: 'PUBLISHED',
           maxPoints

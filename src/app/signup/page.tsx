@@ -130,7 +130,7 @@ export default function SignupPage() {
         </p>
       }
     >
-      <AuthHeading title="Join Axiom Live" sub="Create a student account to join your institute's live assessments." />
+      <AuthHeading title="Join Parikshio" sub="Create a student account to join your institute's live assessments." />
 
       <div className="mb-5 flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3">
         <span className="grid h-9 w-9 place-items-center rounded-xl bg-aurora-500/20 text-aurora-100">
