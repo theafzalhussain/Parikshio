@@ -12,6 +12,12 @@ const FOCUSABLE = [
 ].join(',');
 
 /**
+ * Open overlays, newest last. Only the top one reacts to Escape and Tab, so a
+ * confirmation opened from inside a dialog closes on its own.
+ */
+const openStack: symbol[] = [];
+
+/**
  * Behaviour every overlay in the app needs and browsers do not give you for
  * free with plain `<div>`s:
  *
@@ -29,16 +35,23 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(
 ) {
   const ref = useRef<T>(null);
   const restoreTo = useRef<HTMLElement | null>(null);
+  // Read through a ref so a parent passing a new `onClose` on every render does
+  // not re-run the effect, which would steal focus and reorder stacked dialogs.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
 
     restoreTo.current = document.activeElement as HTMLElement | null;
+    const id = Symbol('dialog');
+    openStack.push(id);
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (openStack[openStack.length - 1] !== id) return;
       if (event.key === 'Escape') {
         event.stopPropagation();
-        onClose();
+        closeRef.current();
         return;
       }
       if (event.key !== 'Tab' || !ref.current) return;
@@ -84,13 +97,15 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(
     }, 0);
 
     return () => {
+      const at = openStack.indexOf(id);
+      if (at >= 0) openStack.splice(at, 1);
       document.removeEventListener('keydown', onKeyDown);
       body.style.overflow = prevOverflow;
       body.style.paddingRight = prevPadding;
       window.clearTimeout(focusTimer);
       restoreTo.current?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   return ref;
 }

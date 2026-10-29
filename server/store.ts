@@ -16,6 +16,12 @@ export interface StoredUser extends PublicUser {
    */
   tokenVersion?: number;
   lastLoginAt?: number;
+  /** Set by the owner console. A suspended account cannot log in or use a session. */
+  suspended?: boolean;
+  suspendedAt?: number;
+  /** Faculty accounts created from the owner console before the person first logged in. */
+  invitedAt?: number;
+  invitedBy?: string;
   googleClassroom?: {
     email: string;
     googleUserId: string;
@@ -54,6 +60,29 @@ export interface ContactMessage {
   delivered: boolean;
   /** The "we received your message" email went to the sender. */
   confirmationSent: boolean;
+  /** Owner console triage. Absent means "new". */
+  status?: ContactStatus;
+  /** Private note from the owner; never shown to the sender. */
+  note?: string;
+  resolvedAt?: number;
+  /** Faculty access requests only: what the owner decided. */
+  facultyDecision?: 'approved' | 'declined';
+  /** The faculty account the request was granted to. */
+  grantedUserId?: string;
+}
+
+export type ContactStatus = 'new' | 'done' | 'archived';
+
+/** One signed-in owner console session. The token carries only its id. */
+export interface OwnerSession {
+  id: string;
+  email: string;
+  createdAt: number;
+  expiresAt: number;
+  lastSeenAt: number;
+  ip: string;
+  userAgent: string;
+  revokedAt?: number;
 }
 
 export interface Store {
@@ -67,6 +96,7 @@ export interface Store {
   passwordResets: PasswordReset[];
   contactMessages: ContactMessage[];
   auditLogs: AuditEntry[];
+  ownerSessions: OwnerSession[];
   /** emitted leaderboard cache busting / diagnostics */
   bootedAt: number;
 }
@@ -81,6 +111,7 @@ export const store: Store = {
   passwordResets: [],
   contactMessages: [],
   auditLogs: [],
+  ownerSessions: [],
   bootedAt: Date.now()
 };
 

@@ -54,6 +54,7 @@ import {
   issueSession,
   publicUser,
   requireRole,
+  SUSPENDED_MESSAGE,
   userFromToken,
   verifyPassword,
   type AuthedRequest
@@ -180,6 +181,11 @@ api.post('/auth/login', loginIpGuard, loginEmailGuard, (req, res) => {
       });
     }
     return res.status(401).json({ error: 'Incorrect email or password.' });
+  }
+
+  if (user.suspended) {
+    recordAudit({ action: 'auth.login_failed', actorId: user.id, actorName: user.name, detail: 'account suspended', ip });
+    return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'auth/suspended' });
   }
 
   user.lastLoginAt = Date.now();
@@ -424,6 +430,11 @@ api.post('/auth/google', googleLimiter, asyncRoute(async (req, res) => {
   let user = db.userByGoogleId(googleId) ?? db.userByEmail(email);
   let created = false;
 
+  if (user?.suspended) {
+    recordAudit({ action: 'auth.google_failed', actorId: user.id, actorName: email, detail: 'account suspended', ip });
+    return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'auth/suspended' });
+  }
+
   if (!user && req.body?.mode === 'signin') {
     // The faculty tab signs in only: a Google account with no Parikshio
     // account must not quietly become a new student account.
@@ -479,8 +490,14 @@ api.post('/auth/forgot-password', forgotPasswordLimiter, forgotPasswordEmailLimi
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
 
   const user = db.userByEmail(email);
-  if (!user) {
-    recordAudit({ action: 'auth.forgot_unknown', actorId: null, actorName: email, detail: 'no account', ip });
+  if (!user || user.suspended) {
+    recordAudit({
+      action: 'auth.forgot_unknown',
+      actorId: user?.id ?? null,
+      actorName: email,
+      detail: user ? 'account suspended' : 'no account',
+      ip
+    });
     return res.json({ ok: true, message: RESET_SENT_MESSAGE });
   }
 
@@ -576,10 +593,14 @@ api.post('/auth/reset-password', resetPasswordLimiter, (req, res) => {
 
   const user = db.userById(record.userId);
   if (!user) return res.status(400).json({ error: 'That account no longer exists' });
+  if (user.suspended) return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'auth/suspended' });
 
   user.passwordHash = hashPassword(password);
   // Bump the session generation so every existing JWT for this user dies.
   user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+  // Opening the emailed link proves the person controls this address.
+  user.emailVerified = true;
+  user.lastLoginAt = Date.now();
   record.usedAt = Date.now();
   persist('users', asPersistable(user));
   persist('passwordResets', asPersistable(record));

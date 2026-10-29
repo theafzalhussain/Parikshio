@@ -108,6 +108,26 @@ function emailFromEnv(name: string, fallback = ''): string {
   return found.toLowerCase();
 }
 
+/**
+ * Who may open the owner console: a comma-separated list of email addresses.
+ * Signing in needs a one-time code sent to one of them, so owning the inbox is
+ * what grants access. Unset means the company inbox; `off` disables the
+ * console entirely.
+ */
+const DEFAULT_OWNER_EMAIL = 'support@parikshio.tech';
+function ownerEmailsFromEnv(): string[] {
+  const raw = (process.env.OWNER_EMAILS ?? '').replace(/[\u200B-\u200D\u2060\uFEFF\u202A-\u202E]/g, '').trim();
+  if (!raw) return [DEFAULT_OWNER_EMAIL];
+  if (/^(off|none|disabled|false|0)$/i.test(raw)) return [];
+  const found = new Set<string>();
+  for (const part of raw.split(/[,;\s]+/)) {
+    const email = EMAIL_IN_TEXT.exec(part)?.[0];
+    if (email) found.add(email.toLowerCase());
+    else if (part) console.warn(`[config] OWNER_EMAILS entry ${JSON.stringify(part.slice(0, 60))} is not an email address — ignoring it.`);
+  }
+  return [...found];
+}
+
 function resolveOfflineSyncGraceMs(): number {
   const configured = process.env.OFFLINE_SYNC_GRACE_MS;
   // Production forces 0: client-reported submit times cannot be trusted, so a
@@ -189,6 +209,19 @@ export const config = {
    */
   contact: {
     inbox: emailFromEnv('CONTACT_INBOX_EMAIL', 'support@parikshio.tech')
+  },
+  /** The hidden owner console at /hq (see server/owner.ts). */
+  owner: {
+    emails: ownerEmailsFromEnv(),
+    get enabled() {
+      return this.emails.length > 0;
+    },
+    /** How long one owner sign-in lasts. */
+    sessionTtlMs: 12 * 60 * 60 * 1000,
+    /** How long an emailed sign-in code works. */
+    codeTtlMs: 10 * 60 * 1000,
+    /** How long a faculty invite's "set your password" link works. */
+    inviteTtlMs: 7 * 24 * 60 * 60 * 1000
   },
   /**
    * Gemini — AI evaluation of short / long answers.

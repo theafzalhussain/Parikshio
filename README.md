@@ -127,6 +127,7 @@ analyse workflow:
 | Contact & feedback | `/contact` (`?topic=general · feedback · problem · faculty · onboarding`) → `POST /api/contact`. Each message is emailed to `CONTACT_INBOX_EMAIL` (default `support@parikshio.tech`) through Brevo with the sender as reply-to, the sender gets a "we received your message" email with a copy and a reference (`PKS-…`, reply-to the team inbox, at most 3 per address per day), and the message is stored in the `contact_messages` collection with `delivered` / `confirmationSent` flags. Throttled per IP (10 / 15 min) and per email (3 / 15 min); a hidden honeypot field drops bots |
 | Branded email | `server/email.ts` — the password reset, the team notification and the sender's confirmation share one table-based, inline-styled frame (midnight header, gold "P" monogram, no remote images) with a plain-text part. Sent from `BREVO_SENDER_EMAIL` (`support@parikshio.tech`); `emailFromEnv()` in `server/config.ts` also accepts values pasted as `=support@…`, `"support@…"` or `Name <support@…>` and logs a warning. The address shown on the site and in every `mailto:` link is `CONTACT_EMAIL` in `src/lib/site.ts` |
 | Student dashboard | Level, progress ring, badges and best streak are worked out in the browser from the student's real answers (`src/lib/progress.ts`, `GET /api/student/history` + `/insights`); no extra database fields. 3D depth, tilt and count-up are CSS transforms (`src/components/student/Motion3D.tsx`), pause when off-screen and are switched off for `prefers-reduced-motion` |
+| **Owner console** | `/hq`, linked from nowhere and marked `noindex` — see [Owner console](#owner-console) |
 | Public pages | Home, `/about`, contact, `/privacy`, `/terms`; `robots.txt`, `sitemap.xml`, web manifest, favicon, Apple touch icon and Open Graph image come from `src/app` file conventions |
 
 ---
@@ -281,6 +282,7 @@ to `main`; no deploy command or manual upload is needed.
 | `GOOGLE_CLASSROOM_CLIENT_ID` · `GOOGLE_CLASSROOM_CLIENT_SECRET` | keep the secret on Render only |
 | `FIREBASE_PROJECT_ID`, `BREVO_*`, `SESSION_TTL` | Google sign-in verification, reset and contact email, session lifetime. `BREVO_SENDER_EMAIL` must be a verified sender in Brevo, or on a domain authenticated in Brevo; otherwise Brevo accepts the request and then drops the email ("sender … is not valid") |
 | `CONTACT_INBOX_EMAIL` | optional; where contact-form messages are emailed (default `support@parikshio.tech`) |
+| `OWNER_EMAILS` | optional; comma-separated addresses that may open the owner console at `/hq` (default `support@parikshio.tech`; `off` turns the console off) |
 
 | Vercel — frontend only | Value |
 | --- | --- |
@@ -294,17 +296,24 @@ Never put a server secret (`JWT_SECRET`, `MONGODB_URI`, `REDIS_URL`, `GEMINI_API
 `NEXT_PUBLIC_*` values are inlined at build time, so adding or changing one only takes effect after a fresh deploy. Also authorise each deployed origin for sign-in: Firebase console → Authentication → Settings → Authorized domains, and register `https://<render-host>/api/classroom/oauth/callback` as an OAuth redirect URI in Google Cloud.
 
 * For Google Classroom in split hosting, keep `APP_URL` on Render equal to the Render backend URL and register `https://<render-host>/api/classroom/oauth/callback` in Google Cloud. Keep `GOOGLE_CLASSROOM_CLIENT_SECRET` on Render only.
-* Public signup creates student accounts only. Faculty/admin accounts must be provisioned through a trusted operational process; the public signup and Google signup endpoints cannot grant admin access. There is no in-app approval yet; until there is, grant a request by hand:
-  1. The teacher creates an ordinary account at `/signup` (student tab) with their work email, or already has one.
-  2. MongoDB Atlas → Browse Collections → your database → `users` → filter `{ "email": "teacher@college.edu" }` → change `role` from `"student"` to `"admin"` → Update. Change nothing else.
-  3. Restart the Render service straight away. Users are read from MongoDB only at boot, and a log-in before the restart writes the old role back.
-  4. Reply to the request email: log in at `/login?role=faculty` with the same email (password or Google).
-* Production does not seed demo users or sample assessments. Provision the first faculty account and any required initial data through a trusted operational process.
+* Public signup creates student accounts only. Faculty/admin accounts must be provisioned through a trusted operational process; the public signup and Google signup endpoints cannot grant admin access. The owner grants faculty access from the owner console (below): approving a "Faculty access" request, or **Users → Add faculty**, raises an existing account to faculty or creates one and emails a 7-day "set your password" link. No database edit or restart is needed.
+* Production does not seed demo users or sample assessments. Create the first faculty account from the owner console (**Users → Add faculty**).
 * Offline answers are stored on the device and sync when connectivity returns, but production accepts them only while the question is open (plus the existing short in-flight grace); client-reported answer times are never trusted for scoring.
 * If deployed behind a reverse proxy, set `TRUSTED_PROXIES` to its exact IP address or CIDR range(s). Leave it blank when there is no trusted proxy; forwarded IP headers are ignored by default.
 * Horizontal scale: run N app instances behind a load balancer with a **Socket.io Redis adapter** (`@socket.io/redis-adapter`) so rooms span instances — the cache layer already speaks Redis.
 * The in-memory hot path is single-process by design (seed data + live exam state). For multi-instance deployments move `store` reads to Mongo/Redis behind the same `db.*` interface — the call sites are already isolated in `server/store.ts`.
 * Hardening checklist: rate-limit `/api/auth/*`, add refresh tokens, audit-log `push`/`grade` actions, and lock CORS to your institute domain.
+
+### Owner console
+
+A private console for the site owner at **`/hq`** (for example `https://www.parikshio.tech/hq`). No page, menu, sitemap or `robots.txt` links to it, and it is marked `noindex`. The hidden address is not the protection, though; the server is (`server/owner.ts`, mounted at `/api/owner`):
+
+* **Sign-in by emailed code.** Enter an address listed in `OWNER_EMAILS` (default `support@parikshio.tech`) and a 6-digit code is emailed to it. The code works once, for 10 minutes, and dies after 5 wrong tries; requests are rate-limited per address and per network, and non-owner addresses get the same reply, so the form does not reveal who the owner is. Access therefore means control of that inbox. It is not tied to any Parikshio account, so signing up with the owner's address grants nothing.
+* **Owner sessions** last 12 hours, are stored in `owner_sessions` (so a restart or deploy keeps you signed in) and are signed with a key derived from `JWT_SECRET`, so a student or faculty token is never accepted by `/api/owner` and an owner token is not a faculty login. Settings lists every owner sign-in and can end the others.
+* **What it can do**, all on the live database: overview counts and system health; faculty requests from the contact form (approve, decline, reopen); every account (search and filter; edit name, institute, email or role; send a reset link; log out everywhere; suspend or reinstate; delete, which also removes a student's answers); **Add faculty** directly by email; the contact inbox (status, private notes, reply by email, delete); every exam session (end or delete); the activity log; a test email.
+* **Suspended** accounts are refused at log-in, Google sign-in, password reset and on every request with an open session (`auth/suspended`).
+* Every owner action is written to the audit log as `owner.*` with the owner's address and IP.
+* Who can be an owner is decided only by `OWNER_EMAILS` on the server; nothing in the console can change it. `OWNER_EMAILS=off` turns the console off. In development without email, the code is printed in the server terminal and shown on the sign-in screen.
 
 ---
 

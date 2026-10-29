@@ -8,7 +8,7 @@
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 
-const BASE = 'http://localhost:3000';
+const BASE = process.env.BASE_URL ?? 'http://localhost:3000';
 const OUT = process.argv[2] ?? 'docs/ui-review';
 await mkdir(OUT, { recursive: true });
 

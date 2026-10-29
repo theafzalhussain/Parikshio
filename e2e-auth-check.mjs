@@ -4,7 +4,7 @@
  */
 import { chromium } from 'playwright';
 
-const BASE = 'http://localhost:3000';
+const BASE = process.env.BASE_URL ?? 'http://localhost:3000';
 const results = [];
 const ok = (name, pass, extra = '') => {
   results.push({ name, pass, extra });

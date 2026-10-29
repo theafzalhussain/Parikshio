@@ -630,3 +630,197 @@ export async function sendContactConfirmation(input: {
     tags: ['contact-confirmation', `topic-${input.topic}`]
   });
 }
+
+// ── owner console ─────────────────────────────────────────────────
+
+/** The one-time code that opens the owner console. */
+export async function sendOwnerCodeEmail(input: {
+  to: string;
+  code: string;
+  minutes: number;
+  ip: string;
+  requestedAt: number;
+}): Promise<SendResult> {
+  if (!config.brevo.enabled) return { ok: false, error: 'email not configured' };
+
+  const when = formatReceivedAt(input.requestedAt);
+  const codeBlock = `
+            <tr>
+              <td align="center" style="padding:26px 32px 4px;">
+                <div style="display:inline-block;border:1px solid #f1e3c2;background:#fbf6ea;border-radius:14px;
+                            padding:16px 26px;font-family:Consolas,'SFMono-Regular',Menlo,monospace;
+                            font-size:30px;font-weight:700;letter-spacing:0.32em;color:#0A0F1D;">
+                  ${escapeHtml(input.code)}
+                </div>
+              </td>
+            </tr>`;
+  const blocks =
+    codeBlock +
+    noteBox(
+      `Requested ${escapeHtml(when)} from IP ${escapeHtml(input.ip)}.<br>
+                      Nobody can sign in without this code. If you did not ask for it, you can ignore this email.`
+    ) +
+    dividerNote('Never share this code. Parikshio will never ask you for it by phone, chat or email.');
+
+  const htmlContent = brandedEmail({
+    title: `${BRAND} owner sign-in code`,
+    preheader: `Your ${BRAND} owner sign-in code. It expires in ${input.minutes} minutes.`,
+    eyebrow: 'Owner console',
+    heading: 'Your sign-in code',
+    intro: paragraph(
+      `Enter this code to open the ${BRAND} owner console. It works once and expires in
+                  <strong style="color:#101828;">${input.minutes} minutes</strong>.`
+    ),
+    blocks,
+    footer: `Sent because a sign-in code was requested for the ${BRAND} owner console.`
+  });
+
+  const textContent =
+    `Your ${BRAND} owner sign-in code: ${input.code}\n\n` +
+    `It works once and expires in ${input.minutes} minutes.\n` +
+    `Requested ${when} from IP ${input.ip}.\n\n` +
+    `Nobody can sign in without this code. If you did not ask for it, ignore this email.\n` +
+    `Never share this code.`;
+
+  return sendViaBrevo({
+    sender: sender(),
+    to: [{ email: input.to }],
+    subject: `Your ${BRAND} owner sign-in code`,
+    htmlContent,
+    textContent,
+    tags: ['owner-code']
+  });
+}
+
+/** A new faculty account made from the owner console: the teacher picks a password. */
+export async function sendFacultyInviteEmail(input: {
+  to: string;
+  name: string;
+  setPasswordUrl: string;
+  loginUrl: string;
+  days: number;
+}): Promise<SendResult> {
+  if (!config.brevo.enabled) return { ok: false, error: 'email not configured' };
+
+  const name = oneLine(input.name) || 'there';
+  const safeUrl = escapeHtml(input.setPasswordUrl);
+  const safeLogin = escapeHtml(input.loginUrl);
+  const blocks =
+    button(safeUrl, 'Set your password') +
+    noteBox(
+      `This link works once and expires in <strong>${input.days} days</strong>. If this address is a Google
+                      account, you can also choose <strong>Continue with Google</strong> on the faculty log-in page instead.`
+    ) +
+    `
+            <tr>
+              <td style="padding:22px 32px 4px;">
+                <p style="margin:0 0 6px;font-size:12px;line-height:1.6;color:#667085;">
+                  If the button doesn't work, copy and paste this link into your browser:
+                </p>
+                <a href="${safeUrl}" style="font-size:12px;line-height:1.6;color:#80612f;word-break:break-all;">${safeUrl}</a>
+              </td>
+            </tr>` +
+    dividerNote(
+      `After that, log in any time at <a href="${safeLogin}" style="color:#80612f;">${escapeHtml(
+        input.loginUrl.replace(/^https?:\/\//, '')
+      )}</a> and choose “Faculty &amp; admin”.`
+    );
+
+  const htmlContent = brandedEmail({
+    title: `Your ${BRAND} faculty account`,
+    preheader: `Your ${BRAND} faculty account is ready. Choose a password to start.`,
+    eyebrow: 'Faculty access',
+    heading: 'Your faculty account is ready',
+    intro: paragraph(
+      `Hi ${escapeHtml(greetingName(name))}, the ${BRAND} team has created a faculty account for
+                  <strong style="color:#101828;">${escapeHtml(input.to)}</strong>. Choose a password to start
+                  authoring questions and running live exams.`
+    ),
+    blocks,
+    footer: escapeHtml(replyFooter())
+  });
+
+  const textContent =
+    `Hi ${greetingName(name)},\n\n` +
+    `The ${BRAND} team has created a faculty account for ${input.to}.\n` +
+    `Choose a password here (works once, expires in ${input.days} days):\n\n${input.setPasswordUrl}\n\n` +
+    `If this address is a Google account you can also use "Continue with Google" on the faculty log-in page.\n` +
+    `Log in any time at ${input.loginUrl}\n\n${replyFooter()}`;
+
+  return sendViaBrevo({
+    sender: sender(),
+    to: [{ email: input.to, name }],
+    subject: `Your ${BRAND} faculty account is ready`,
+    htmlContent,
+    textContent,
+    tags: ['faculty-invite']
+  });
+}
+
+/** An existing account was given faculty access. */
+export async function sendFacultyGrantedEmail(input: { to: string; name: string; loginUrl: string }): Promise<SendResult> {
+  if (!config.brevo.enabled) return { ok: false, error: 'email not configured' };
+
+  const name = oneLine(input.name) || 'there';
+  const blocks =
+    button(escapeHtml(input.loginUrl), 'Log in as faculty') +
+    dividerNote('You were logged out on your other devices so the change takes effect everywhere.');
+
+  const htmlContent = brandedEmail({
+    title: `Faculty access granted · ${BRAND}`,
+    preheader: `Your ${BRAND} account now has faculty access.`,
+    eyebrow: 'Faculty access',
+    heading: 'Faculty access granted',
+    intro: paragraph(
+      `Hi ${escapeHtml(greetingName(name))}, your ${BRAND} account
+                  <strong style="color:#101828;">${escapeHtml(input.to)}</strong> now has faculty access. Log in again
+                  with your usual password or Google to open the faculty console.`
+    ),
+    blocks,
+    footer: escapeHtml(replyFooter())
+  });
+
+  const textContent =
+    `Hi ${greetingName(name)},\n\n` +
+    `Your ${BRAND} account ${input.to} now has faculty access.\n` +
+    `Log in again with your usual password or Google: ${input.loginUrl}\n\n` +
+    `You were logged out on your other devices so the change takes effect everywhere.\n\n${replyFooter()}`;
+
+  return sendViaBrevo({
+    sender: sender(),
+    to: [{ email: input.to, name }],
+    subject: `Faculty access granted · ${BRAND}`,
+    htmlContent,
+    textContent,
+    tags: ['faculty-granted']
+  });
+}
+
+/** Plain check that email works end to end, sent from the owner console. */
+export async function sendOwnerTestEmail(to: string): Promise<SendResult> {
+  if (!config.brevo.enabled) return { ok: false, error: 'email not configured' };
+  const when = formatReceivedAt(Date.now());
+  const htmlContent = brandedEmail({
+    title: `${BRAND} test email`,
+    preheader: `Email from ${BRAND} is working.`,
+    eyebrow: 'Owner console',
+    heading: 'Email is working',
+    intro: paragraph(
+      `This test was sent from the ${BRAND} owner console ${escapeHtml(when)}. Password resets, contact-form
+                  emails and faculty invites use the same sender.`
+    ),
+    blocks: dividerNote(
+      `Sender: ${escapeHtml(config.brevo.senderName)} &lt;${escapeHtml(config.brevo.senderEmail)}&gt;<br>
+                  If this landed in spam, mark it as “Not spam”; authenticating ${SITE_DOMAIN} in Brevo (DKIM) helps too.`
+    ),
+    footer: `Sent from the ${BRAND} owner console.`
+  });
+  return sendViaBrevo({
+    sender: sender(),
+    to: [{ email: to }],
+    subject: `${BRAND} test email`,
+    htmlContent,
+    textContent: `This test was sent from the ${BRAND} owner console ${when}. Email is working.`,
+    tags: ['owner-test']
+  });
+}

@@ -71,7 +71,7 @@ export interface AuthedRequest extends Request {
   user?: PublicUser;
 }
 
-type AuthFailure = 'missing' | 'invalid' | 'expired' | 'stale' | 'unknown-user';
+type AuthFailure = 'missing' | 'invalid' | 'expired' | 'stale' | 'unknown-user' | 'suspended';
 
 function failureResponse(kind: AuthFailure): { status: number; error: string; code: string } {
   switch (kind) {
@@ -87,10 +87,15 @@ function failureResponse(kind: AuthFailure): { status: number; error: string; co
       };
     case 'unknown-user':
       return { status: 401, error: 'Session no longer valid', code: 'auth/unknown-user' };
+    case 'suspended':
+      return { status: 401, error: SUSPENDED_MESSAGE, code: 'auth/suspended' };
     default:
       return { status: 401, error: 'Invalid session', code: 'auth/invalid' };
   }
 }
+
+/** Shown wherever a suspended account tries to get in. */
+export const SUSPENDED_MESSAGE = `This account is suspended. If you think this is a mistake, write to ${config.contact.inbox}.`;
 
 export function authenticate(req: AuthedRequest, res: ExpressResponse, next: NextFunction) {
   const header = req.headers.authorization ?? '';
@@ -107,6 +112,11 @@ export function authenticate(req: AuthedRequest, res: ExpressResponse, next: Nex
     const user = db.userById(payload.sub);
     if (!user) {
       const fail = failureResponse('unknown-user');
+      return res.status(fail.status).json({ error: fail.error, code: fail.code });
+    }
+    // Checked before the version so the person is told why, not "password changed".
+    if (user.suspended) {
+      const fail = failureResponse('suspended');
       return res.status(fail.status).json({ error: fail.error, code: fail.code });
     }
     // Reject sessions minted before the last password change.
@@ -138,7 +148,7 @@ export function userFromToken(token: string): PublicUser | null {
   try {
     const payload = jwt.verify(token, config.jwtSecret) as TokenPayload;
     const user = db.userById(payload.sub);
-    if (!user) return null;
+    if (!user || user.suspended) return null;
     if ((payload.v ?? 0) !== (user.tokenVersion ?? 0)) return null;
     return publicUser(user);
   } catch {

@@ -4,6 +4,7 @@ import express from 'express';
 import { Server } from 'socket.io';
 import { config, isProd } from './config';
 import { api } from './api';
+import { ownerApi } from './owner';
 import { cache } from './cache';
 import { initMongo, mongoReady } from './mongo';
 import { seedIfEmpty } from './seed';
@@ -100,6 +101,7 @@ async function main() {
     }
     nextFn();
   });
+  app.use('/api/owner', ownerApi);
   app.use('/api', api);
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
   app.all('*', (req, res) => handle(req, res));
@@ -211,6 +213,9 @@ async function main() {
     );
     console.log(
       `     email:  ${config.brevo.enabled ? `brevo · from ${config.brevo.senderName} <${config.brevo.senderEmail}> · contact inbox ${config.contact.inbox}` : 'off (set BREVO_API_KEY and BREVO_SENDER_EMAIL)'}`
+    );
+    console.log(
+      `     owner:  ${config.owner.enabled ? `/hq · sign-in codes go to ${config.owner.emails.join(', ')}` : 'off (OWNER_EMAILS=off)'}`
     );
     console.log(`     data:   ${store.questions.length} questions · ${store.exams.length} exams · ${store.responses.length} responses\n`);
   });
