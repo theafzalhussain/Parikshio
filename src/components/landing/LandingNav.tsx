@@ -12,6 +12,7 @@ import { cx } from '@/lib/api';
 
 /** Section links work from any page: on the home page they scroll, elsewhere they navigate home first. */
 const links = [
+  { href: '/about', label: 'About' },
   { href: '/#how', label: 'How it works' },
   { href: '/#modes', label: 'Exam modes' },
   { href: '/#features', label: 'Features' },

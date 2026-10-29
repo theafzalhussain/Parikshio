@@ -21,7 +21,8 @@ const BREVO_ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
 /** Product name in email headings and subjects. The From name is BREVO_SENDER_NAME. */
 const BRAND = 'Parikshio';
 const SITE_DOMAIN = 'parikshio.tech';
-const SITE_URL = `https://${SITE_DOMAIN}`;
+/** The live site answers on www; the bare domain only redirects there. */
+const SITE_URL = `https://www.${SITE_DOMAIN}`;
 
 export interface SendResult {
   ok: boolean;

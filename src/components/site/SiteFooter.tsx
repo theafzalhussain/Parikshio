@@ -9,6 +9,7 @@ const columns: { title: string; links: [label: string, href: string][] }[] = [
   {
     title: 'Product',
     links: [
+      ['About Parikshio', '/about'],
       ['How it works', '/#how'],
       ['Exam modes', '/#modes'],
       ['Features', '/#features'],

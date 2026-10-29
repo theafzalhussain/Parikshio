@@ -4,23 +4,26 @@
 > questions, run timed live sessions, capture answers as they arrive, and turn
 > them into actionable analytics.
 
-**Parikshio** ([parikshio.tech](https://parikshio.tech)) is a production-shaped
+**Parikshio** ([parikshio.tech](https://www.parikshio.tech/)) is a production-shaped
 educational testing platform for faculty and students. It combines an admin
 control room with a focused student experience and a server-authoritative
 real-time assessment engine. The name comes from परीक्षा (*pariksha*), the
 Hindi word for an examination.
 
+**Website:** [www.parikshio.tech](https://www.parikshio.tech/)
+
 Stack: **Next.js 14 + TypeScript + Tailwind CSS** · **Node.js + Express** · **MongoDB** · **Redis** · **Socket.io**
 
 > **Naming note:** a few internal identifiers keep the project's original
-> codename on purpose: the npm package name, browser storage keys (`axiom.token`,
-> `axiom.user`, IndexedDB `axiom-offline`), the Redis prefix `axiom:*`, Mongoose
-> model names, the Render service `axiom-api` and the `@axiom.edu` demo
-> accounts. Renaming them would sign every user out, orphan stored data or
-> break the deploy, and none of them is visible to users.
+> codename on purpose: browser storage keys (`axiom.token`, `axiom.user`,
+> IndexedDB `axiom-offline`), the Redis prefix `axiom:*`, Mongoose model names
+> and the `@axiom.edu` demo accounts. Renaming them would sign every user out
+> or orphan stored data, and none of them is visible to users. The npm package
+> is `parikshio` and the Render blueprint service is `parikshio-api`.
 
 ## Contents
 
+- [About Parikshio](#about-parikshio)
 - [Run it](#1-run-it)
 - [What it includes](#2-what-it-includes)
 - [Upload a question paper](#3-upload-your-own-question-paper-pdf--word--photo)
@@ -28,6 +31,21 @@ Stack: **Next.js 14 + TypeScript + Tailwind CSS** · **Node.js + Express** · **
 - [Try the real-time loop](#5-try-the-real-time-loop-in-60-seconds)
 - [Production notes](#6-production-notes)
 - [Project map](#7-project-map)
+
+---
+
+## About Parikshio
+
+Parikshio helps schools, coaching institutes and educators run faster,
+fairer and more measurable assessments. Teachers can create question banks,
+upload papers, launch timed live exams and monitor responses in real time.
+Students get a focused, mobile-friendly exam experience, while institute teams
+get instant grading, rankings and analytics that make learning gaps easier to
+spot.
+
+Parikshio is designed around one simple workflow: **create → deliver → grade →
+improve**. Learn more at [parikshio.tech](https://www.parikshio.tech/) or on the
+in-app [About page](https://www.parikshio.tech/about).
 
 ---
 
@@ -109,7 +127,7 @@ analyse workflow:
 | Contact & feedback | `/contact` (`?topic=general · feedback · problem · faculty · onboarding`) → `POST /api/contact`. Each message is emailed to `CONTACT_INBOX_EMAIL` (default `support@parikshio.tech`) through Brevo with the sender as reply-to, the sender gets a "we received your message" email with a copy and a reference (`PKS-…`, reply-to the team inbox, at most 3 per address per day), and the message is stored in the `contact_messages` collection with `delivered` / `confirmationSent` flags. Throttled per IP (10 / 15 min) and per email (3 / 15 min); a hidden honeypot field drops bots |
 | Branded email | `server/email.ts` — the password reset, the team notification and the sender's confirmation share one table-based, inline-styled frame (midnight header, gold "P" monogram, no remote images) with a plain-text part. Sent from `BREVO_SENDER_EMAIL` (`support@parikshio.tech`); `emailFromEnv()` in `server/config.ts` also accepts values pasted as `=support@…`, `"support@…"` or `Name <support@…>` and logs a warning. The address shown on the site and in every `mailto:` link is `CONTACT_EMAIL` in `src/lib/site.ts` |
 | Student dashboard | Level, progress ring, badges and best streak are worked out in the browser from the student's real answers (`src/lib/progress.ts`, `GET /api/student/history` + `/insights`); no extra database fields. 3D depth, tilt and count-up are CSS transforms (`src/components/student/Motion3D.tsx`), pause when off-screen and are switched off for `prefers-reduced-motion` |
-| Public pages | Home, contact, `/privacy`, `/terms`; `robots.txt`, `sitemap.xml`, web manifest, favicon, Apple touch icon and Open Graph image come from `src/app` file conventions |
+| Public pages | Home, `/about`, contact, `/privacy`, `/terms`; `robots.txt`, `sitemap.xml`, web manifest, favicon, Apple touch icon and Open Graph image come from `src/app` file conventions |
 
 ---
 
@@ -256,7 +274,7 @@ to `main`; no deploy command or manual upload is needed.
 
 | Render — Web Service | Value |
 | --- | --- |
-| `APP_URL` | the public HTTPS origin, e.g. `https://your-app.onrender.com` — HTTPS is required in production |
+| `APP_URL` | the public HTTPS origin, e.g. `https://www.parikshio.tech` — HTTPS is required in production |
 | `ALLOWED_ORIGINS` | every Vercel origin that must reach the API, comma-separated (production + preview) |
 | `JWT_SECRET` · `MONGODB_URI` · `REDIS_URL` | session signing key and backing stores |
 | `GEMINI_API_KEY` | AI grading; leave unset to fall back to answer-key / manual review |
@@ -269,7 +287,7 @@ to `main`; no deploy command or manual upload is needed.
 | `USE_DEFAULT_DIST_DIR` | optional; the config automatically uses `.next` when it detects Vercel |
 | `NEXT_PUBLIC_API_URL` | the Render service URL |
 | `NEXT_PUBLIC_FIREBASE_*` | the four public Firebase web-app values |
-| `NEXT_PUBLIC_SITE_URL` | optional; canonical origin for metadata, sitemap and share images (default `https://parikshio.tech`) |
+| `NEXT_PUBLIC_SITE_URL` | optional; canonical origin for metadata, sitemap and share images (default `https://www.parikshio.tech`) |
 
 Never put a server secret (`JWT_SECRET`, `MONGODB_URI`, `REDIS_URL`, `GEMINI_API_KEY`, `BREVO_API_KEY`, `GOOGLE_CLASSROOM_CLIENT_SECRET`) in the Vercel project: the UI never reads them.
 

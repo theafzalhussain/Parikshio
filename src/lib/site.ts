@@ -9,9 +9,14 @@ export const SITE_TAGLINE = 'Live assessment platform';
 export const SITE_DESCRIPTION =
   'Parikshio is the live exam platform for universities, schools and coaching institutes. Push questions to every student with a server-synced timer — one at a time or a whole paper at once — and see answers graded the moment they arrive.';
 
-/** Canonical public origin. Override with NEXT_PUBLIC_SITE_URL on a different domain. */
-export const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL ?? 'https://parikshio.tech').trim().replace(/\/+$/, '');
-export const SITE_DOMAIN = SITE_URL.replace(/^https?:\/\//, '');
+/**
+ * Canonical public origin. The live site answers on www (the bare domain
+ * redirects there), so links, canonical URLs and the sitemap use it directly.
+ * Override with NEXT_PUBLIC_SITE_URL on a different domain.
+ */
+export const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL ?? 'https://www.parikshio.tech').trim().replace(/\/+$/, '');
+/** The domain as people type it, for display: "parikshio.tech". */
+export const SITE_DOMAIN = SITE_URL.replace(/^https?:\/\//, '').replace(/^www\./, '');
 
 /** The one address used everywhere: shown on the site, in every mailto link, and as the team inbox. */
 export const CONTACT_EMAIL = 'support@parikshio.tech';

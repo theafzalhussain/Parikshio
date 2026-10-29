@@ -1,6 +1,6 @@
 version: '3.9'
 
-# Optional infrastructure for Axiom Live.
+# Optional infrastructure for Parikshio.
 #   docker compose up -d
 # then set in .env:
 #   MONGODB_URI=mongodb://127.0.0.1:27017/axiom_live

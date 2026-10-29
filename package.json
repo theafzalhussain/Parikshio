@@ -1,5 +1,5 @@
 {
-  "name": "axiom-live",
+  "name": "parikshio",
   "version": "1.0.0",
   "private": true,
   "description": "Parikshio — live exam platform for universities, schools and coaching institutes (Next.js + Express + Socket.io + MongoDB + Redis)",

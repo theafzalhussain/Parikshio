@@ -3,6 +3,7 @@ import { SITE_URL } from '@/lib/site';
 
 const PAGES: { path: string; priority: number; changeFrequency: 'weekly' | 'monthly' | 'yearly' }[] = [
   { path: '', priority: 1, changeFrequency: 'weekly' },
+  { path: '/about', priority: 0.7, changeFrequency: 'monthly' },
   { path: '/signup', priority: 0.8, changeFrequency: 'monthly' },
   { path: '/login', priority: 0.7, changeFrequency: 'monthly' },
   { path: '/contact', priority: 0.6, changeFrequency: 'monthly' },
