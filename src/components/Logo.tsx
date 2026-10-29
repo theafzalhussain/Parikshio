@@ -25,7 +25,7 @@ export function Wordmark({ compact = false }: { compact?: boolean }) {
     <span className="flex items-center gap-2.5">
       <LogoMark />
       <span className="flex flex-col leading-none">
-        <span className="text-[15px] font-semibold tracking-[0.16em] text-white">AXIOM</span>
+        <span className="text-[15px] font-semibold tracking-[0.16em] text-white">PARIKSHIO</span>
         {!compact && (
           <span className="mt-1 text-[9px] font-medium uppercase tracking-[0.34em] text-white/35">
             assessment os

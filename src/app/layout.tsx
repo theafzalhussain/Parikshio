@@ -26,18 +26,21 @@ const display = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://www.parikshio.tech'),
   title: {
-    default: 'Axiom Live — Real-time assessment OS for institutes',
-    template: '%s · Axiom Live'
+    default: 'Parikshio — Real-time assessment platform for institutes',
+    template: '%s · Parikshio'
   },
   description:
-    'Axiom Live is a real-time educational testing platform: push questions with per-question timers, capture timestamped answers, auto-grade objective questions and read institute-grade analytics instantly.',
-  applicationName: 'Axiom Live',
+    'Parikshio is a real-time educational assessment platform for institutes: create exams, engage students, grade answers and understand performance with live analytics.',
+  applicationName: 'Parikshio',
+  alternates: { canonical: '/' },
   openGraph: {
-    title: 'Axiom Live — Real-time assessment OS for institutes',
+    title: 'Parikshio — Real-time assessment platform for institutes',
     description:
-      'Author any question type, push it to every student device with a server-authoritative timer, and watch auto-graded results rank themselves.',
-    siteName: 'Axiom Live',
+      'Create and deliver live assessments with synchronized timers, instant grading and actionable institute analytics.',
+    siteName: 'Parikshio',
+    url: 'https://www.parikshio.tech/',
     type: 'website'
   },
   twitter: { card: 'summary_large_image' }

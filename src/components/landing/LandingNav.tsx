@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/auth';
 import { cx } from '@/lib/api';
 
 const links = [
+  { href: '/about', label: 'About' },
   { href: '#how', label: 'How it works' },
   { href: '#features', label: 'Platform' },
   { href: '#analytics', label: 'Analytics' },

@@ -197,7 +197,7 @@ async function main() {
   }, 10_000);
 
   server.listen(config.port, '0.0.0.0', () => {
-    console.log(`\n  ⬢  Axiom Live  ·  http://localhost:${config.port}`);
+    console.log(`\n  ⬢  Parikshio  ·  http://localhost:${config.port}`);
     console.log(`     engine: ${isProd ? 'production' : 'development'}  ·  boot ${Date.now() - t0}ms`);
     console.log(`     mongo:  ${mongoReady() ? 'connected' : 'ephemeral (no MONGODB_URI)'}`);
     console.log(`     redis:  ${cache.stats().status}`);
