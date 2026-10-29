@@ -1,18 +1,23 @@
-# ⬢ Axiom Live (Parikshio)
+# ⬢ Parikshio
 
-> A real-time assessment OS for institutes: author questions, run timed live
-> sessions, capture answers as they arrive, and turn them into actionable
-> analytics.
+> Live exams for universities, schools and coaching institutes: author
+> questions, run timed live sessions, capture answers as they arrive, and turn
+> them into actionable analytics.
 
-Parikshio is the repository for **Axiom Live**, a production-shaped
+**Parikshio** ([parikshio.tech](https://parikshio.tech)) is a production-shaped
 educational testing platform for faculty and students. It combines an admin
 control room with a focused student experience and a server-authoritative
-real-time assessment engine.
+real-time assessment engine. The name comes from परीक्षा (*pariksha*), the
+Hindi word for an examination.
 
 Stack: **Next.js 14 + TypeScript + Tailwind CSS** · **Node.js + Express** · **MongoDB** · **Redis** · **Socket.io**
 
-> **Repository note:** the GitHub repository is named `Parikshio`; the product
-> shown in the UI and application metadata is named **Axiom Live**.
+> **Naming note:** a few internal identifiers keep the project's original
+> codename on purpose: the npm package name, browser storage keys (`axiom.token`,
+> `axiom.user`, IndexedDB `axiom-offline`), the Redis prefix `axiom:*`, Mongoose
+> model names, the Render service `axiom-api` and the `@axiom.edu` demo
+> accounts. Renaming them would sign every user out, orphan stored data or
+> break the deploy, and none of them is visible to users.
 
 ## Contents
 
@@ -92,9 +97,19 @@ analyse workflow:
 | Institute analytics | `analytics()` + `/admin/analytics/[id]` — accuracy, completion, avg score, per-question diagnostics, option distribution, latency histogram, format strength, CSV export |
 | **Paper upload → question extraction** | `POST /api/papers/upload` (PDF / DOCX / image / text) → `server/files.ts` (pdfjs line rebuild, mammoth, Tesseract OCR) → `server/extract.ts` (parser) → every question stored with `sourcePaperId` |
 | **Per-question controls in the panel** | Each row carries inline **timer**, **Push**, **Edit**, **Delete** — on the paper workbench (`/admin/papers/[id]`) and in the question bank |
+| **Bulk push · self-paced sets** | Tick several questions (control room, question bank or paper workbench) → **Push together** with one shared timer or one per question (`POST /api/exams/:id/push-set`). Every student sees the list and picks the order; a question's timer starts only when that student opens it (`POST /api/student/sets/open`), one at a time. On submit or timeout the next open question is offered (optional auto-start). A timed-out or skipped question stays closed for that student until faculty re-opens it (`POST /api/exams/:id/set/repush`); faculty can close the whole set (`POST /api/exams/:id/set/close`). Per-student deadlines live in `store.attempts` (mirrored to MongoDB) and are enforced in `submitAnswer()` |
+| Bulk question management | `POST /api/questions/bulk-update` (timer / points / difficulty / topic for many questions, each re-validated) and `POST /api/questions/bulk-delete` (questions attached to a session are kept and reported); `POST /api/exams/:id/questions/remove` detaches questions that have no answers yet |
+| Session settings | `PATCH /api/exams/:id` — rename, show/hide the student leaderboard, reveal the answer key + explanations after the session ends, default options for question sets. **Edit** opens the same dialog from Live sessions, Analytics and the control room |
+| Delete sessions | `DELETE /api/exams/:id` and `POST /api/exams/bulk-delete { ids }` remove a session with its answers, set timers, cached views and queued AI grading (questions stay in the bank; a paper published as that session can be published again). Students in the room get `exam:removed` and return to their lobby. Live sessions and Analytics both have per-card delete and multi-select bulk delete, with a confirmation that lists the answers being removed |
+| Student review & insights | After a session ends each student gets a question-by-question review (answer key only when faculty allows it); `GET /api/student/insights` powers accuracy by format and topic, strongest / weakest topic and best streak in the lobby |
 | Redis caching | `server/cache.ts` — leaderboard + analytics cached with TTL, prefix invalidation on every mutation |
 | MongoDB | `server/mongo.ts` — write-through mirror + hydrate on boot |
 | Google Classroom | Teacher OAuth, roster-to-account email matching, exam course mapping and score publishing from the admin control room |
+| Role-based log in | `/login` and `/signup` each carry a **Student · Faculty & admin** switch (`?role=faculty` opens the faculty tab, `?next=/student/...` returns the user to where they were). Students sign up themselves; the faculty tab explains that faculty accounts are created on request, and Google sign-in on that tab never creates an account (`mode: 'signin'` → 404 `auth/no-account`) |
+| Contact & feedback | `/contact` (`?topic=general · feedback · problem · faculty · onboarding`) → `POST /api/contact`. Each message is emailed to `CONTACT_INBOX_EMAIL` (default `support@parikshio.tech`) through Brevo with the sender as reply-to, the sender gets a "we received your message" email with a copy and a reference (`PKS-…`, reply-to the team inbox, at most 3 per address per day), and the message is stored in the `contact_messages` collection with `delivered` / `confirmationSent` flags. Throttled per IP (10 / 15 min) and per email (3 / 15 min); a hidden honeypot field drops bots |
+| Branded email | `server/email.ts` — the password reset, the team notification and the sender's confirmation share one table-based, inline-styled frame (midnight header, gold "P" monogram, no remote images) with a plain-text part. Sent from `BREVO_SENDER_EMAIL` (`support@parikshio.tech`); `emailFromEnv()` in `server/config.ts` also accepts values pasted as `=support@…`, `"support@…"` or `Name <support@…>` and logs a warning. The address shown on the site and in every `mailto:` link is `CONTACT_EMAIL` in `src/lib/site.ts` |
+| Student dashboard | Level, progress ring, badges and best streak are worked out in the browser from the student's real answers (`src/lib/progress.ts`, `GET /api/student/history` + `/insights`); no extra database fields. 3D depth, tilt and count-up are CSS transforms (`src/components/student/Motion3D.tsx`), pause when off-screen and are switched off for `prefers-reduced-motion` |
+| Public pages | Home, contact, `/privacy`, `/terms`; `robots.txt`, `sitemap.xml`, web manifest, favicon, Apple touch icon and Open Graph image come from `src/app` file conventions |
 
 ---
 
@@ -162,6 +177,7 @@ GET    /api/questions            POST /api/questions
 PATCH  /api/questions/:id        DELETE /api/questions/:id
 GET    /api/exams                POST /api/exams
 GET    /api/exams/:id            POST /api/exams/:id/push | /lock | /end
+PATCH  /api/exams/:id            DELETE /api/exams/:id      POST /api/exams/bulk-delete
 GET    /api/exams/:id/analytics  GET /api/exams/:id/leaderboard
 POST   /api/responses/:id/grade
 GET    /api/grading/status                 dual-mode engine + AI queue state       (admin)
@@ -171,22 +187,23 @@ POST   /api/exams/:id/ai-grade             { scope: 'pending' | 'all' } bulk AI 
 GET    /api/student/exams | /student/history
 POST   /api/student/join         POST /api/student/answers
 GET    /api/student/exams/:id | /student/exams/by-code/:code
+POST   /api/contact              { topic, role, name, email, org?, message, rating? } → 201 (public, throttled)
 GET    /api/health
 ```
 
 ### Socket contracts (`shared/types.ts`)
 
-Server → client: `exam:state`, `question:pushed`, `question:locked`, `exam:ended`, `leaderboard:update`, `response:new` (staff only), `student:tab-hidden` (staff only), `time:sync`, `notice`
+Server → client: `exam:state`, `question:pushed`, `question:locked`, `exam:ended`, `exam:removed`, `leaderboard:update`, `response:new` (staff only), `student:tab-hidden` (staff only), `time:sync`, `notice`
 Client → server: `join:exam`, `student:tab-hidden`, `time:sync:request`
 
 ---
 
 ## 5. Try the real-time loop in 60 seconds
 
-0. Sign in as **admin** → *Question papers* → upload a PDF/Word/photo of your own paper (or hit **Load example**) — all its questions appear in the panel with timer + push + edit.
-1. Sign in as **admin** → *Question bank* → add a question (any format, set its timer).
+0. Log in as **admin** → *Question papers* → upload a PDF/Word/photo of your own paper (or hit **Load example**) — all its questions appear in the panel with timer + push + edit.
+1. Log in as **admin** → *Question bank* → add a question (any format, set its timer).
 2. *Live sessions* → open **QM4LIVE** → adjust a timer in the queue → **Push**.
-3. In a second browser (incognito) sign in as **aarav@axiom.edu** → lobby → **QM4LIVE**.
+3. In a second browser (incognito) log in as **aarav@axiom.edu** → lobby → **QM4LIVE**.
 4. Answer as the timer runs: the admin feed updates instantly with latency + grade; the leaderboard re-ranks by accuracy then speed.
 5. Push a **long answer** question — it lands in the review queue; score it from the feed and watch the leaderboard change.
 6. Open **Analytics** for the same session: per-question accuracy, option distribution, latency histogram, CSV export.
@@ -198,7 +215,7 @@ During a live session, the Student interface discloses that hiding the exam tab 
 1. In Google Cloud Console, enable the **Google Classroom API**, configure the OAuth consent screen, and create an OAuth 2.0 **Web application** client.
 2. Add the exact redirect URI `https://<your-app-origin>/api/classroom/oauth/callback` (local development: `http://localhost:3000/api/classroom/oauth/callback`) to that client.
 3. Configure `GOOGLE_CLASSROOM_CLIENT_ID` and `GOOGLE_CLASSROOM_CLIENT_SECRET` in the server environment. Never expose the client secret in browser code or commit it.
-4. Open an exam's Admin control room, connect the faculty Google account, select and link the corresponding course, and use **Sync roster** to review email matches. Only existing Axiom student accounts are matched; Classroom roster sync does not create accounts.
+4. Open an exam's Admin control room, connect the faculty Google account, select and link the corresponding course, and use **Sync roster** to review email matches. Only existing Parikshio student accounts are matched; Classroom roster sync does not create accounts.
 5. Once linked, ending the exam automatically creates one Classroom coursework item and posts the total scores of matched students who participated in the exam. If publication fails, the control room displays the failure and offers a retry. The coursework item is created as part of the one-time publish flow; changing a course after publication is blocked to prevent duplicate assignments.
 
 Google's OAuth consent configuration and Classroom access policies determine which courses and roster details are available. Live publication requires a correctly configured teacher account and course; local automated tests cannot verify an external Google account.
@@ -244,20 +261,26 @@ to `main`; no deploy command or manual upload is needed.
 | `JWT_SECRET` · `MONGODB_URI` · `REDIS_URL` | session signing key and backing stores |
 | `GEMINI_API_KEY` | AI grading; leave unset to fall back to answer-key / manual review |
 | `GOOGLE_CLASSROOM_CLIENT_ID` · `GOOGLE_CLASSROOM_CLIENT_SECRET` | keep the secret on Render only |
-| `FIREBASE_PROJECT_ID`, `BREVO_*`, `SESSION_TTL` | Google sign-in verification, reset email, session lifetime |
+| `FIREBASE_PROJECT_ID`, `BREVO_*`, `SESSION_TTL` | Google sign-in verification, reset and contact email, session lifetime. `BREVO_SENDER_EMAIL` must be a verified sender in Brevo, or on a domain authenticated in Brevo; otherwise Brevo accepts the request and then drops the email ("sender … is not valid") |
+| `CONTACT_INBOX_EMAIL` | optional; where contact-form messages are emailed (default `support@parikshio.tech`) |
 
 | Vercel — frontend only | Value |
 | --- | --- |
 | `USE_DEFAULT_DIST_DIR` | optional; the config automatically uses `.next` when it detects Vercel |
 | `NEXT_PUBLIC_API_URL` | the Render service URL |
 | `NEXT_PUBLIC_FIREBASE_*` | the four public Firebase web-app values |
+| `NEXT_PUBLIC_SITE_URL` | optional; canonical origin for metadata, sitemap and share images (default `https://parikshio.tech`) |
 
 Never put a server secret (`JWT_SECRET`, `MONGODB_URI`, `REDIS_URL`, `GEMINI_API_KEY`, `BREVO_API_KEY`, `GOOGLE_CLASSROOM_CLIENT_SECRET`) in the Vercel project: the UI never reads them.
 
 `NEXT_PUBLIC_*` values are inlined at build time, so adding or changing one only takes effect after a fresh deploy. Also authorise each deployed origin for sign-in: Firebase console → Authentication → Settings → Authorized domains, and register `https://<render-host>/api/classroom/oauth/callback` as an OAuth redirect URI in Google Cloud.
 
 * For Google Classroom in split hosting, keep `APP_URL` on Render equal to the Render backend URL and register `https://<render-host>/api/classroom/oauth/callback` in Google Cloud. Keep `GOOGLE_CLASSROOM_CLIENT_SECRET` on Render only.
-* Public signup creates student accounts only. Faculty/admin accounts must be provisioned through a trusted operational process; the public signup and Google signup endpoints cannot grant admin access.
+* Public signup creates student accounts only. Faculty/admin accounts must be provisioned through a trusted operational process; the public signup and Google signup endpoints cannot grant admin access. There is no in-app approval yet; until there is, grant a request by hand:
+  1. The teacher creates an ordinary account at `/signup` (student tab) with their work email, or already has one.
+  2. MongoDB Atlas → Browse Collections → your database → `users` → filter `{ "email": "teacher@college.edu" }` → change `role` from `"student"` to `"admin"` → Update. Change nothing else.
+  3. Restart the Render service straight away. Users are read from MongoDB only at boot, and a log-in before the restart writes the old role back.
+  4. Reply to the request email: log in at `/login?role=faculty` with the same email (password or Google).
 * Production does not seed demo users or sample assessments. Provision the first faculty account and any required initial data through a trusted operational process.
 * Offline answers are stored on the device and sync when connectivity returns, but production accepts them only while the question is open (plus the existing short in-flight grace); client-reported answer times are never trusted for scoring.
 * If deployed behind a reverse proxy, set `TRUSTED_PROXIES` to its exact IP address or CIDR range(s). Leave it blank when there is no trusted proxy; forwarded IP headers are ignored by default.
@@ -274,13 +297,16 @@ server/         config, auth, store, mongo, cache, engine (push/lock/submit/anal
                 extract.ts  → question-paper parser (blocks, options, marks, keys, types)
                 files.ts    → PDF (pdfjs, pdf-parse fallback) · DOCX (mammoth) · OCR (tesseract.js)
 shared/         types.ts (domain + socket contracts), grade.ts (grading, ranking, stats)
-src/app/        /  /login  /admin  /admin/questions  /admin/exams  /admin/exams/[id]
+src/app/        /  /login  /signup  /forgot-password  /reset-password  /contact  /privacy  /terms
+                /admin  /admin/questions  /admin/exams  /admin/exams/[id]
                 /admin/papers  /admin/papers/[id]  /admin/analytics  /admin/analytics/[id]
                 /student  /student/exam/[code]
-src/components/ AdminShell, StudentShell, Leaderboard, ui/*, charts/*, landing/*
-src/lib/        api client, auth provider, socket hooks (status, server clock, animation)
+                favicon.ico · apple-icon.png · opengraph-image.png · manifest.ts · robots.ts · sitemap.ts
+src/components/ AdminShell, StudentShell, Logo, Leaderboard, ui/*, charts/*, landing/*, site/* (footer, contact, legal), auth/*
+src/lib/        api client, auth provider, socket hooks (status, server clock, animation), site.ts (brand + contact details)
+public/         icons/ (web app icons) · brand/ (mark SVG/PNG, logo lockups, social avatar)
 ```
 
 Question papers: upload PDF / Word / photo in *Question papers*; the parser (`server/extract.ts`) rebuilds questions, options, marks and answer keys, and every imported item keeps a link back to its paper (`/admin/papers/[id]`) with timer · push · edit · delete per question.
 
-UI notes: single dark "control-room" system — ink `#05060A` base, aurora violet for admin actions, lime for the live/success path, ember for expiry, tabular numerals for every metric, gradient hairlines instead of borders, and reduced-motion respected. Fonts are system stacks so the build has **zero external requests** (works fully offline / in sandboxed previews).
+UI notes: a "midnight & champagne" system: deep navy surfaces, champagne gold for primary actions and the brand, royal indigo for selection, emerald and coral for right and wrong, tabular numerals for every metric, and reduced motion respected. Fraunces (display) and Inter (text) are self-hosted by `next/font`, so pages make no runtime font requests. The logo is a stopwatch "P": the bowl of the letter is a dial with a tick inside, crowned like a stopwatch. Its geometry lives in `src/components/Logo.tsx` and is reused by every icon and the brand kit in `public/brand/`.

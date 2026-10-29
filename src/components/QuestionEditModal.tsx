@@ -128,13 +128,13 @@ export function QuestionEditModal({
       width="max-w-3xl"
       footer={
         <>
-          <span className="mr-auto text-[11px] text-white/30">
+          <span className="mr-auto text-[12px] text-white/45">
             {question?.sourcePaperName ? `Source · ${question.sourcePaperName}` : 'Manual entry'}
           </span>
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="lime" size="sm" loading={busy} onClick={save}>
+          <Button variant="gold" size="sm" loading={busy} onClick={save}>
             Save changes
           </Button>
         </>
@@ -150,10 +150,10 @@ export function QuestionEditModal({
                 type="button"
                 onClick={() => setType(t)}
                 className={cx(
-                  'rounded-xl border px-2 py-2 text-[11.5px] font-medium transition',
+                  'rounded-xl border px-2 py-2 text-[12.5px] font-medium transition',
                   form.type === t
-                    ? 'border-aurora-400/50 bg-aurora-500/[0.12] text-white'
-                    : 'border-white/[0.08] bg-white/[0.02] text-white/55 hover:border-white/20'
+                    ? 'border-royal-400/50 bg-royal-500/[0.12] text-white'
+                    : 'border-white/[0.08] bg-white/[0.02] text-white/70 hover:border-white/20'
                 )}
               >
                 {TYPE_LABEL[t]}
@@ -205,10 +205,10 @@ export function QuestionEditModal({
                     type="button"
                     onClick={() => setForm({ ...form, correctOptionIndex: i })}
                     className={cx(
-                      'grid h-7 w-7 shrink-0 place-items-center rounded-full border text-[11px] font-semibold transition',
+                      'grid h-7 w-7 shrink-0 place-items-center rounded-full border text-[12px] font-semibold transition',
                       form.correctOptionIndex === i
                         ? 'border-transparent bg-mint-500 text-ink-950'
-                        : 'border-white/15 text-white/40 hover:border-white/35'
+                        : 'border-white/15 text-white/55 hover:border-white/35'
                     )}
                   >
                     {form.correctOptionIndex === i ? <Check className="h-3.5 w-3.5" /> : String.fromCharCode(65 + i)}
@@ -257,10 +257,10 @@ export function QuestionEditModal({
                   type="button"
                   onClick={() => setForm({ ...form, correctOptionIndex: i })}
                   className={cx(
-                    'flex-1 rounded-xl border px-3 py-2.5 text-[12.5px] transition',
+                    'flex-1 rounded-xl border px-3 py-2.5 text-[13.5px] transition',
                     form.correctOptionIndex === i
                       ? 'border-mint-400/50 bg-mint-500/10 text-mint-200'
-                      : 'border-white/[0.08] bg-white/[0.02] text-white/50 hover:border-white/20'
+                      : 'border-white/[0.08] bg-white/[0.02] text-white/65 hover:border-white/20'
                   )}
                 >
                   {label}
@@ -308,10 +308,10 @@ export function QuestionEditModal({
                 type="button"
                 onClick={() => setForm({ ...form, timerSeconds: preset })}
                 className={cx(
-                  'rounded-lg border px-2 py-1 text-[11px] transition',
+                  'rounded-lg border px-2 py-1 text-[12px] transition',
                   form.timerSeconds === preset
-                    ? 'border-lime-400/40 bg-lime-400/10 text-lime-200'
-                    : 'border-white/[0.08] text-white/45 hover:border-white/25 hover:text-white/80'
+                    ? 'border-gold-400/40 bg-gold-400/10 text-gold-200'
+                    : 'border-white/[0.08] text-white/60 hover:border-white/25 hover:text-white/80'
                 )}
               >
                 {preset}s
@@ -326,7 +326,7 @@ export function QuestionEditModal({
         </div>
 
         {error && (
-          <p className="rounded-xl border border-ember-500/30 bg-ember-500/10 px-3 py-2 text-[12px] text-ember-400">
+          <p className="rounded-xl border border-ember-500/30 bg-ember-500/10 px-3 py-2 text-[13px] text-ember-400">
             {error}
           </p>
         )}

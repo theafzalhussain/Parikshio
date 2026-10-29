@@ -6,16 +6,20 @@ import {
   Check,
   FileUp,
   Filter,
+  Layers,
   Pencil,
   Plus,
   Search,
   Send,
+  SlidersHorizontal,
   Timer,
   Trash2,
   X
 } from 'lucide-react';
 import { PushDialog } from '@/components/PushDialog';
 import { AdminShell } from '@/components/AdminShell';
+import { BulkEditDialog } from '@/components/admin/BulkEditDialog';
+import { BulkPushDialog } from '@/components/admin/BulkPushDialog';
 import { Badge, EmptyState, Panel, SectionHead } from '@/components/ui/Panel';
 import { Button, IconButton, LinkButton } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
@@ -56,6 +60,11 @@ export default function QuestionBankPage() {
   const [paperFilter, setPaperFilter] = useState<'all' | 'manual' | string>('all');
   const [papers, setPapers] = useState<{ id: string; name: string; questionCount: number }[]>([]);
   const [aiOn, setAiOn] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bulkPushOpen, setBulkPushOpen] = useState(false);
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const load = () =>
     api<{ questions: Question[] }>('/questions')
@@ -179,6 +188,48 @@ export default function QuestionBankPage() {
     }
   }
 
+  const selectedQuestions = useMemo(
+    () => (questions ?? []).filter((q) => selected.includes(q.id)),
+    [questions, selected]
+  );
+  const allFilteredSelected = filtered.length > 0 && filtered.every((q) => selected.includes(q.id));
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  function toggleAllFiltered() {
+    setSelected((prev) =>
+      allFilteredSelected
+        ? prev.filter((id) => !filtered.some((q) => q.id === id))
+        : [...new Set([...prev, ...filtered.map((q) => q.id)])]
+    );
+  }
+
+  async function removeSelected() {
+    setDeleteBusy(true);
+    try {
+      const res = await api<{ deleted: string[]; skipped: { id: string; reason: string }[] }>('/questions/bulk-delete', {
+        method: 'POST',
+        body: { ids: selected }
+      });
+      push({
+        kind: res.skipped.length ? 'warn' : 'success',
+        title: `${res.deleted.length} question${res.deleted.length === 1 ? '' : 's'} deleted`,
+        body: res.skipped.length
+          ? `${res.skipped.length} kept because they are attached to a session. Remove them from the session first.`
+          : undefined
+      });
+      setSelected((prev) => prev.filter((id) => !res.deleted.includes(id)));
+      setConfirmDelete(false);
+      await load();
+    } catch (err) {
+      push({ kind: 'error', title: 'Delete failed', body: err instanceof ApiError ? err.message : 'Try again' });
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
   const needsOptions = form.type === 'mcq';
   const needsAnswers = form.type === 'fill' || form.type === 'short' || form.type === 'long';
 
@@ -191,7 +242,7 @@ export default function QuestionBankPage() {
           <LinkButton href="/admin/papers" variant="secondary" size="sm">
             <FileUp className="h-3.5 w-3.5" /> Upload paper
           </LinkButton>
-          <Button size="sm" variant="lime" onClick={openNew}>
+          <Button size="sm" variant="gold" onClick={openNew}>
             <Plus className="h-3.5 w-3.5" /> New question
           </Button>
         </div>
@@ -201,7 +252,7 @@ export default function QuestionBankPage() {
         {/* toolbar */}
         <Panel className="flex flex-wrap items-center gap-2.5 p-3">
           <div className="relative min-w-[200px] flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/25" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -210,7 +261,7 @@ export default function QuestionBankPage() {
             />
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="mr-1 hidden items-center gap-1.5 text-[11px] uppercase tracking-[0.12em] text-white/25 sm:flex">
+            <span className="mr-1 hidden items-center gap-1.5 text-[12px] uppercase tracking-[0.12em] text-white/40 sm:flex">
               <Filter className="h-3 w-3" /> type
             </span>
             {(['all', ...TYPES] as const).map((t) => (
@@ -218,10 +269,10 @@ export default function QuestionBankPage() {
                 key={t}
                 onClick={() => setTypeFilter(t as 'all' | QuestionType)}
                 className={cx(
-                  'rounded-lg px-2.5 py-1.5 text-[11.5px] font-medium transition',
+                  'rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium transition',
                   typeFilter === t
                     ? 'bg-white/[0.09] text-white ring-1 ring-inset ring-white/15'
-                    : 'text-white/40 hover:bg-white/[0.04] hover:text-white/70'
+                    : 'text-white/55 hover:bg-white/[0.04] hover:text-white/80'
                 )}
               >
                 {t === 'all' ? 'All' : t === 'truefalse' ? 'T/F' : t.toUpperCase()}
@@ -232,7 +283,7 @@ export default function QuestionBankPage() {
 
         {papers.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="mr-1 text-[11px] uppercase tracking-[0.12em] text-white/25">source</span>
+            <span className="mr-1 text-[12px] uppercase tracking-[0.12em] text-white/40">source</span>
             {[
               { id: 'all' as const, label: `All (${questions?.length ?? 0})` },
               { id: 'manual' as const, label: 'Manual' },
@@ -242,10 +293,10 @@ export default function QuestionBankPage() {
                 key={chip.id}
                 onClick={() => setPaperFilter(chip.id)}
                 className={cx(
-                  'max-w-[240px] truncate rounded-lg border px-2.5 py-1.5 text-[11.5px] transition',
+                  'max-w-[240px] truncate rounded-lg border px-2.5 py-1.5 text-[12.5px] transition',
                   paperFilter === chip.id
-                    ? 'border-aurora-400/40 bg-aurora-500/[0.12] text-white'
-                    : 'border-white/[0.08] bg-white/[0.02] text-white/45 hover:border-white/25 hover:text-white/80'
+                    ? 'border-royal-400/40 bg-royal-500/[0.12] text-white'
+                    : 'border-white/[0.08] bg-white/[0.02] text-white/60 hover:border-white/25 hover:text-white/80'
                 )}
               >
                 {chip.label}
@@ -271,27 +322,58 @@ export default function QuestionBankPage() {
           />
         ) : (
           <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+              <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13px] text-white/70 transition hover:bg-white/[0.04]">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-[#DFB873]"
+                  checked={allFilteredSelected}
+                  onChange={toggleAllFiltered}
+                  aria-label="Select every question in this view"
+                />
+                Select all {filtered.length} in view
+              </label>
+              {selected.length > 0 && (
+                <span className="text-[13px] text-white/55">{selected.length} selected</span>
+              )}
+            </div>
             {filtered.map((q) => (
-              <Panel key={q.id} hover className="group p-4">
-                <div className="flex flex-wrap items-start gap-3">
-                  <div className="min-w-0 flex-1">
+              <Panel
+                key={q.id}
+                hover
+                className={cx('group p-4', selected.includes(q.id) && 'border-royal-400/40 bg-royal-500/[0.06]')}
+              >
+                {/*
+                  Phones: checkbox | question, with the actions on their own row under the
+                  question. From md up the actions sit on the right. A single flex row let
+                  the buttons squeeze the question into a one-word-wide column.
+                */}
+                <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-3 md:grid-cols-[auto_minmax(0,1fr)_auto]">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-[#DFB873]"
+                    checked={selected.includes(q.id)}
+                    onChange={() => toggleSelected(q.id)}
+                    aria-label={`Select question: ${q.prompt.slice(0, 60)}`}
+                  />
+                  <div className="min-w-0">
                     <div className="mb-2 flex flex-wrap items-center gap-1.5">
                       <TypePill type={q.type} />
                       <Badge tone="neutral">{q.topic}</Badge>
-                      <Badge tone={q.difficulty === 'hard' ? 'ember' : q.difficulty === 'easy' ? 'mint' : 'violet'}>
+                      <Badge tone={q.difficulty === 'hard' ? 'ember' : q.difficulty === 'easy' ? 'mint' : 'royal'}>
                         {q.difficulty}
                       </Badge>
-                      <span className="num inline-flex items-center gap-1 text-[11px] text-white/35">
+                      <span className="num inline-flex items-center gap-1 text-[12px] text-white/50">
                         <Timer className="h-3 w-3" /> {q.timerSeconds}s
                       </span>
-                      <span className="num text-[11px] text-white/35">{q.points} pts</span>
+                      <span className="num text-[12px] text-white/50">{q.points} pts</span>
                       {q.sourcePaperId && (
                         <Link href={`/admin/papers/${q.sourcePaperId}`}>
                           <Badge tone="sky">from paper</Badge>
                         </Link>
                       )}
                     </div>
-                    <p className="text-[13.5px] leading-relaxed text-white/85">{q.prompt}</p>
+                    <p className="break-words text-[14.5px] leading-relaxed text-white/85">{q.prompt}</p>
 
                     {(q.type === 'mcq' || q.type === 'truefalse') && (
                       <div className="mt-2.5 flex flex-wrap gap-1.5">
@@ -299,15 +381,15 @@ export default function QuestionBankPage() {
                           <span
                             key={`${q.id}-opt-${i}`}
                             className={cx(
-                              'inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11.5px]',
+                              'inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2 py-1 text-[12.5px]',
                               i === q.correctOptionIndex
                                 ? 'border-mint-400/40 bg-mint-500/10 text-mint-200'
-                                : 'border-white/[0.08] bg-white/[0.02] text-white/45'
+                                : 'border-white/[0.08] bg-white/[0.02] text-white/60'
                             )}
                           >
-                            {i === q.correctOptionIndex && <Check className="h-3 w-3" />}
-                            <span className="font-mono">{String.fromCharCode(65 + i)}</span>
-                            <span className="max-w-[220px] truncate">{opt}</span>
+                            {i === q.correctOptionIndex && <Check className="h-3 w-3 shrink-0" />}
+                            <span className="shrink-0 font-mono">{String.fromCharCode(65 + i)}</span>
+                            <span className="min-w-0 truncate sm:max-w-[260px]">{opt}</span>
                           </span>
                         ))}
                       </div>
@@ -315,18 +397,18 @@ export default function QuestionBankPage() {
 
                     {needsAnswersForDisplay(q) && (
                       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                        <span className="text-[10.5px] uppercase tracking-[0.12em] text-white/25">
+                        <span className="text-[11.5px] uppercase tracking-[0.12em] text-white/40">
                           {q.type === 'fill' ? 'accepted' : 'reference'}
                         </span>
                         {q.acceptedAnswers.length === 0 ? (
-                          <span className="text-[11.5px] text-amber-300/80">
+                          <span className="text-[12.5px] text-amber-300/80">
                             {aiOn ? 'none · AI grades from the prompt' : 'manual review'}
                           </span>
                         ) : (
                           q.acceptedAnswers.map((a) => (
                             <span
                               key={`${q.id}-ans-${a}`}
-                              className="rounded-md border border-mint-400/25 bg-mint-500/10 px-1.5 py-0.5 text-[11px] text-mint-200"
+                              className="max-w-full break-words rounded-md border border-mint-400/25 bg-mint-500/10 px-1.5 py-0.5 text-[12px] text-mint-200"
                             >
                               {a}
                             </span>
@@ -336,9 +418,9 @@ export default function QuestionBankPage() {
                     )}
                   </div>
 
-                  <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  <div className="col-span-2 flex flex-wrap items-center gap-1.5 border-t border-white/[0.06] pt-3 md:col-span-1 md:justify-end md:border-0 md:pt-0">
                     <div className="flex items-center gap-1 rounded-xl border border-white/[0.08] bg-ink-900/70 px-2 py-1">
-                      <Timer className="h-3.5 w-3.5 text-white/30" />
+                      <Timer className="h-3.5 w-3.5 text-white/45" />
                       <input
                         type="number"
                         min={5}
@@ -365,15 +447,15 @@ export default function QuestionBankPage() {
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                         }}
-                        className="num w-12 bg-transparent text-[12.5px] text-white/85 outline-none"
+                        className="num w-12 bg-transparent text-[13.5px] text-white/85 outline-none"
                         aria-label="Timer seconds"
                       />
-                      <span className="text-[10.5px] text-white/30">s</span>
+                      <span className="text-[11.5px] text-white/45">s</span>
                     </div>
                     <Button size="sm" variant="outline" onClick={() => setPushTarget(q)}>
                       <Send className="h-3.5 w-3.5" /> Push
                     </Button>
-                    <IconButton onClick={() => openEdit(q)} aria-label="Edit question">
+                    <IconButton onClick={() => openEdit(q)} aria-label="Edit question" className="ml-auto md:ml-0">
                       <Pencil className="h-3.5 w-3.5" />
                     </IconButton>
                     <IconButton
@@ -390,10 +472,95 @@ export default function QuestionBankPage() {
           </div>
         )}
 
-        <p className="text-center text-[11px] text-white/20">
+        <p className="text-center text-[12px] text-white/40">
           Showing {filtered.length} of {questions?.length ?? 0} questions · answer keys are never sent to student devices
         </p>
+
+        {/* Bulk actions — pinned to the bottom edge so they stay within thumb reach on phones. */}
+        {selected.length > 0 && (
+          <div className="sticky bottom-4 z-30 mx-auto flex w-full max-w-3xl animate-popIn flex-wrap items-center gap-2 rounded-2xl border border-gold-200/20 bg-ink-850/95 p-2.5 shadow-lift backdrop-blur-xl">
+            <span className="px-2 text-[13.5px] font-medium text-white">
+              {selected.length} selected
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelected([])}
+              className="focus-ring rounded-lg px-2 py-1 text-[12.5px] text-white/55 transition hover:text-white"
+            >
+              Clear
+            </button>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
+                <Trash2 className="h-3.5 w-3.5" /> Delete
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => setBulkEditOpen(true)}>
+                <SlidersHorizontal className="h-3.5 w-3.5" /> Edit
+              </Button>
+              <Button variant="gold" size="sm" onClick={() => setBulkPushOpen(true)}>
+                <Layers className="h-3.5 w-3.5" /> Push together
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
+
+      <BulkPushDialog
+        open={bulkPushOpen}
+        onClose={() => setBulkPushOpen(false)}
+        questions={selectedQuestions}
+        initialTimers={timers}
+        onPushed={() => {
+          setSelected([]);
+          void load();
+        }}
+      />
+
+      <BulkEditDialog
+        open={bulkEditOpen}
+        onClose={() => setBulkEditOpen(false)}
+        ids={selected}
+        onSaved={(updated) => {
+          setQuestions((prev) =>
+            prev ? prev.map((row) => updated.find((u) => u.id === row.id) ?? row) : prev
+          );
+          setTimers((prev) => {
+            const next = { ...prev };
+            updated.forEach((u) => {
+              next[u.id] = u.timerSeconds;
+            });
+            return next;
+          });
+        }}
+      />
+
+      <Modal
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        title={`Delete ${selected.length} question${selected.length === 1 ? '' : 's'}?`}
+        description="Deleted questions cannot be recovered. Questions attached to a session are kept — remove them from the session first."
+        width="max-w-md"
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" size="sm" loading={deleteBusy} onClick={removeSelected}>
+              <Trash2 className="h-3.5 w-3.5" /> Delete
+            </Button>
+          </>
+        }
+      >
+        <ul className="max-h-48 space-y-1.5 overflow-y-auto">
+          {selectedQuestions.slice(0, 8).map((q) => (
+            <li key={q.id} className="line-clamp-1 text-[13px] text-white/70">
+              • {q.prompt}
+            </li>
+          ))}
+          {selectedQuestions.length > 8 && (
+            <li className="text-[13px] text-white/45">and {selectedQuestions.length - 8} more…</li>
+          )}
+        </ul>
+      </Modal>
 
       <PushDialog
         open={!!pushTarget}
@@ -414,7 +581,7 @@ export default function QuestionBankPage() {
             <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button variant="lime" size="sm" loading={busy} onClick={save}>
+            <Button variant="gold" size="sm" loading={busy} onClick={save}>
               {editing ? 'Save changes' : 'Add to bank'}
             </Button>
           </>
@@ -432,14 +599,14 @@ export default function QuestionBankPage() {
                   className={cx(
                     'rounded-xl border px-2 py-2.5 text-left transition',
                     form.type === t
-                      ? 'border-aurora-400/50 bg-aurora-500/[0.12]'
+                      ? 'border-royal-400/50 bg-royal-500/[0.12]'
                       : 'border-white/[0.08] bg-white/[0.02] hover:border-white/20'
                   )}
                 >
-                  <p className="text-[11.5px] font-semibold text-white/85">
+                  <p className="text-[12.5px] font-semibold text-white/85">
                     {t === 'truefalse' ? 'True/False' : t === 'mcq' ? 'MCQ' : t === 'fill' ? 'Fill blank' : t === 'short' ? 'Short' : 'Long'}
                   </p>
-                  <p className="mt-0.5 text-[9.5px] uppercase tracking-[0.08em] text-white/30">
+                  <p className="mt-0.5 text-[10.5px] uppercase tracking-[0.08em] text-white/45">
                     {t === 'short' || t === 'long' ? (aiOn ? 'AI graded' : t === 'long' ? 'manual' : 'key') : 'answer key'}
                   </p>
                 </button>
@@ -500,10 +667,10 @@ export default function QuestionBankPage() {
                       type="button"
                       onClick={() => setForm({ ...form, correctOptionIndex: i })}
                       className={cx(
-                        'grid h-7 w-7 shrink-0 place-items-center rounded-full border text-[11px] font-semibold transition',
+                        'grid h-7 w-7 shrink-0 place-items-center rounded-full border text-[12px] font-semibold transition',
                         form.correctOptionIndex === i
                           ? 'border-transparent bg-mint-500 text-ink-950'
-                          : 'border-white/15 text-white/40 hover:border-white/35'
+                          : 'border-white/15 text-white/55 hover:border-white/35'
                       )}
                       aria-label={`Mark option ${i + 1} correct`}
                     >
@@ -559,10 +726,10 @@ export default function QuestionBankPage() {
                     type="button"
                     onClick={() => setForm({ ...form, correctOptionIndex: i })}
                     className={cx(
-                      'flex-1 rounded-xl border px-3 py-2.5 text-[12.5px] transition',
+                      'flex-1 rounded-xl border px-3 py-2.5 text-[13.5px] transition',
                       form.correctOptionIndex === i
                         ? 'border-mint-400/50 bg-mint-500/10 text-mint-200'
-                        : 'border-white/[0.08] bg-white/[0.02] text-white/50 hover:border-white/20'
+                        : 'border-white/[0.08] bg-white/[0.02] text-white/65 hover:border-white/20'
                     )}
                   >
                     {label}
@@ -601,14 +768,14 @@ export default function QuestionBankPage() {
                 }
               />
               {form.type === 'long' && !answersText.trim() && (
-                <p className="mt-1.5 text-[11px] text-amber-300/80">
+                <p className="mt-1.5 text-[12px] text-amber-300/80">
                   {aiOn
                     ? 'No reference yet — the AI grader will mark from the question alone. Adding key points makes scoring more consistent.'
                     : 'Long answers without keys are queued for manual scoring — that is the expected behaviour.'}
                 </p>
               )}
               {form.type === 'short' && aiOn && (
-                <p className="mt-1.5 text-[11px] text-white/35">
+                <p className="mt-1.5 text-[12px] text-white/50">
                   Short answers are scored by the AI evaluator (partial credit allowed). An exact match to a key still
                   earns full marks if the AI is unavailable.
                 </p>
@@ -638,7 +805,7 @@ export default function QuestionBankPage() {
           </div>
 
           {formError && (
-            <p className="rounded-xl border border-ember-500/30 bg-ember-500/10 px-3 py-2 text-[12px] text-ember-400">
+            <p className="rounded-xl border border-ember-500/30 bg-ember-500/10 px-3 py-2 text-[13px] text-ember-400">
               {formError}
             </p>
           )}

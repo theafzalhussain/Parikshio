@@ -2,7 +2,7 @@
   "name": "axiom-live",
   "version": "1.0.0",
   "private": true,
-  "description": "Axiom Live — real-time educational assessment platform (Next.js + Express + Socket.io + MongoDB + Redis)",
+  "description": "Parikshio — live exam platform for universities, schools and coaching institutes (Next.js + Express + Socket.io + MongoDB + Redis)",
   "scripts": {
     "dev": "cross-env NODE_ENV=development tsx server/index.ts",
     "build": "next build",

@@ -33,10 +33,10 @@ export function OfflineQueuePanel({ outbox, className }: { outbox: OutboxSnapsho
             className={cx(
               'mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xl ring-1 ring-inset',
               pending.length > 0
-                ? 'bg-amber-400/12 text-amber-300 ring-amber-400/25'
+                ? 'bg-amber-400/[0.12] text-amber-300 ring-amber-400/25'
                 : online
-                  ? 'bg-white/[0.06] text-white/50 ring-white/10'
-                  : 'bg-ember-500/12 text-ember-400 ring-ember-500/25'
+                  ? 'bg-white/[0.06] text-white/65 ring-white/10'
+                  : 'bg-ember-500/[0.12] text-ember-400 ring-ember-500/25'
             )}
           >
             {syncing ? (
@@ -52,7 +52,7 @@ export function OfflineQueuePanel({ outbox, className }: { outbox: OutboxSnapsho
 
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-[13px] font-semibold text-white">
+              <p className="text-[14px] font-semibold text-white">
                 {pending.length > 0
                   ? syncing
                     ? 'Delivering your saved answers'
@@ -64,7 +64,7 @@ export function OfflineQueuePanel({ outbox, className }: { outbox: OutboxSnapsho
               <Badge tone={tone}>{online ? (syncing ? 'syncing' : 'queued') : 'offline'}</Badge>
             </div>
 
-            <p className="mt-1 max-w-xl text-[12px] leading-relaxed text-white/45">
+            <p className="mt-1 max-w-xl text-[13px] leading-relaxed text-white/60">
               {volatile
                 ? 'This browser blocks local storage, so answers can only be held in memory — do not reload the page while you are offline.'
                 : pending.length > 0
@@ -95,11 +95,11 @@ export function OfflineQueuePanel({ outbox, className }: { outbox: OutboxSnapsho
               className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2"
             >
               <div className="min-w-0">
-                <p className="truncate text-[12px] text-white/75">
-                  <span className="num mr-1.5 text-white/35">Q{record.questionIndex}</span>
+                <p className="truncate text-[13px] text-white/75">
+                  <span className="num mr-1.5 text-white/50">Q{record.questionIndex}</span>
                   {record.answer || '—'}
                 </p>
-                <p className="mt-0.5 text-[10.5px] text-white/30">
+                <p className="mt-0.5 text-[11.5px] text-white/45">
                   saved {fmtRelative(record.clientSubmittedAt)}
                   {record.attempts > 0 && ` · ${record.attempts} attempt${record.attempts > 1 ? 's' : ''}`}
                   {record.lastError && ` · ${record.lastError}`}
@@ -108,7 +108,7 @@ export function OfflineQueuePanel({ outbox, className }: { outbox: OutboxSnapsho
               <button
                 type="button"
                 onClick={() => void discardAnswer(record.id)}
-                className="focus-ring inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10.5px] uppercase tracking-[0.12em] text-white/30 transition hover:bg-ember-500/10 hover:text-ember-400"
+                className="focus-ring inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11.5px] uppercase tracking-[0.12em] text-white/45 transition hover:bg-ember-500/10 hover:text-ember-400"
                 aria-label={`Discard the saved answer for question ${record.questionIndex}`}
               >
                 <Trash2 className="h-3 w-3" /> discard
@@ -119,14 +119,14 @@ export function OfflineQueuePanel({ outbox, className }: { outbox: OutboxSnapsho
       )}
 
       {!online && pending.length === 0 && !volatile && (
-        <p className="mt-3 flex items-center gap-1.5 text-[11px] text-white/30">
+        <p className="mt-3 flex items-center gap-1.5 text-[12px] text-white/45">
           <CloudOff className="h-3.5 w-3.5" />
           The question timer keeps running on the server while you are disconnected.
         </p>
       )}
 
       {volatile && (
-        <p className="mt-3 flex items-center gap-1.5 text-[11px] text-amber-300/70">
+        <p className="mt-3 flex items-center gap-1.5 text-[12px] text-amber-300/70">
           <CircleAlert className="h-3.5 w-3.5" /> Storage: in-memory only
         </p>
       )}

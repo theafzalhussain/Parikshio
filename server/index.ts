@@ -10,8 +10,9 @@ import { seedIfEmpty } from './seed';
 import { db, store } from './store';
 import { userFromToken } from './auth';
 import { emitStaff, setIO, examRoom, staffRoom, staffLobby, userRoom, type AxiomIO } from './realtime';
-import { buildExamPublic, getLeaderboard, rearmTimers } from './engine';
+import { buildExamPublic, getLeaderboard, rearmTimers, startAttemptSweeper } from './engine';
 import { resumeAiQueue } from './grading';
+import { studentsSeeLeaderboard } from './sessionRules';
 import type { ClientToServerEvents, PublicUser, Role, ServerToClientEvents } from '../shared/types';
 
 /**
@@ -35,7 +36,7 @@ function ensurePortFree(port: number): Promise<void> {
             : `lsof -ti:${port} | xargs kill -9`;
         reject(
           new Error(
-            `Port ${port} is already in use — another Axiom server is running.\n\n` +
+            `Port ${port} is already in use — another Parikshio server is running.\n\n` +
               '       Two servers sharing one build directory leave the running one\n' +
               '       serving broken assets, so this one stopped instead of starting.\n\n' +
               '       Check your editor terminals first. To free the port:\n\n' +
@@ -59,6 +60,8 @@ async function main() {
   await initMongo();
   if (!isProd) seedIfEmpty();
   rearmTimers();
+  // Settles self-paced timers that ran out while nobody was looking.
+  startAttemptSweeper();
   // Evaluations interrupted by a restart pick up where they left off.
   resumeAiQueue();
 
@@ -167,7 +170,9 @@ async function main() {
 
       socket.emit('time:sync', { serverTime: Date.now() });
       socket.emit('exam:state', buildExamPublic(exam, user.id));
-      socket.emit('leaderboard:update', { examId: exam.id, entries: getLeaderboard(exam.id) });
+      if (role === 'admin' || studentsSeeLeaderboard(exam)) {
+        socket.emit('leaderboard:update', { examId: exam.id, entries: getLeaderboard(exam.id) });
+      }
     });
 
     socket.on('student:tab-hidden', (payload) => {
@@ -197,12 +202,15 @@ async function main() {
   }, 10_000);
 
   server.listen(config.port, '0.0.0.0', () => {
-    console.log(`\n  ⬢  Axiom Live  ·  http://localhost:${config.port}`);
+    console.log(`\n  ⬢  Parikshio  ·  http://localhost:${config.port}`);
     console.log(`     engine: ${isProd ? 'production' : 'development'}  ·  boot ${Date.now() - t0}ms`);
     console.log(`     mongo:  ${mongoReady() ? 'connected' : 'ephemeral (no MONGODB_URI)'}`);
     console.log(`     redis:  ${cache.stats().status}`);
     console.log(
       `     ai:     ${config.gemini.enabled ? `gemini (${config.gemini.models.join(' → ')})${config.gemini.autoGrade ? '' : ' · on demand'}` : 'off (set GEMINI_API_KEY to AI-grade short/long answers)'}`
+    );
+    console.log(
+      `     email:  ${config.brevo.enabled ? `brevo · from ${config.brevo.senderName} <${config.brevo.senderEmail}> · contact inbox ${config.contact.inbox}` : 'off (set BREVO_API_KEY and BREVO_SENDER_EMAIL)'}`
     );
     console.log(`     data:   ${store.questions.length} questions · ${store.exams.length} exams · ${store.responses.length} responses\n`);
   });

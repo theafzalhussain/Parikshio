@@ -168,8 +168,8 @@ export function seedIfEmpty(): void {
 
   const now = Date.now();
   const users = [
-    { name: 'Dr. Meera Sharma', email: DEMO_ACCOUNT_EMAILS.admin, role: 'admin' as const, org: 'Axiom Institute of Technology', password: 'admin123' },
-    { name: 'Faculty · Rohan Deshpande', email: DEMO_ACCOUNT_EMAILS.faculty, role: 'admin' as const, org: 'Axiom Institute of Technology', password: 'admin123' },
+    { name: 'Dr. Meera Sharma', email: DEMO_ACCOUNT_EMAILS.admin, role: 'admin' as const, org: 'Parikshio Demo Institute', password: 'admin123' },
+    { name: 'Faculty · Rohan Deshpande', email: DEMO_ACCOUNT_EMAILS.faculty, role: 'admin' as const, org: 'Parikshio Demo Institute', password: 'admin123' },
     { name: 'Aarav Mehta', email: DEMO_ACCOUNT_EMAILS.aarav, role: 'student' as const, org: 'CSE · Semester 5', password: 'student123' },
     { name: 'Zoya Khan', email: DEMO_ACCOUNT_EMAILS.zoya, role: 'student' as const, org: 'CSE · Semester 5', password: 'student123' },
     { name: 'Rohan Iyer', email: DEMO_ACCOUNT_EMAILS.rohan, role: 'student' as const, org: 'ECE · Semester 5', password: 'student123' },

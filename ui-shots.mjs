@@ -41,7 +41,7 @@ const fonts = await page.evaluate(() => {
   return { body, accent: accent ? getComputedStyle(accent).fontFamily : '(none)' };
 });
 ok('body uses the Inter variable', /__Inter|Inter/.test(fonts.body), fonts.body.slice(0, 60));
-ok('accent uses the serif display face', /Instrument|serif/i.test(fonts.accent), fonts.accent.slice(0, 60));
+ok('accent uses the serif display face', /Fraunces|serif/i.test(fonts.accent), fonts.accent.slice(0, 60));
 const loaded = await page.evaluate(() => document.fonts.size > 0 && document.fonts.status === 'loaded');
 ok('font set finished loading', loaded);
 
@@ -101,7 +101,7 @@ console.log('\n5) toast behaviour');
 await page.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
 await page.fill('#login-email', 'admin@axiom.edu');
 await page.locator('input[type="password"]').first().fill('admin123');
-await page.getByRole('button', { name: /^sign in/i }).first().click();
+await page.getByRole('button', { name: /^log in/i }).first().click();
 // Assert the toast before the redirect settles: on a cold dev server compiling
 // /admin can outlast the toast's own lifetime, which would look like a failure.
 // Target the toast precisely: `[role=alert]` alone also matches the inline form

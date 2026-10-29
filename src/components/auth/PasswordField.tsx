@@ -72,7 +72,7 @@ export function PasswordField({
         {label}
       </Label>
       <div className="relative">
-        <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/25" />
+        <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
         <Input
           id={fieldId}
           type={visible ? 'text' : 'password'}
@@ -88,7 +88,7 @@ export function PasswordField({
         <button
           type="button"
           onClick={() => setVisible((v) => !v)}
-          className="focus-ring absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-white/30 transition hover:text-white/70"
+          className="focus-ring absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-white/45 transition hover:text-white/80"
           aria-label={visible ? 'Hide password' : 'Show password'}
           aria-pressed={visible}
         >
@@ -112,7 +112,7 @@ export function PasswordField({
             </div>
             <span
               className={cx(
-                'w-12 text-right text-[10.5px] font-semibold uppercase tracking-[0.1em]',
+                'w-12 text-right text-[11.5px] font-semibold uppercase tracking-[0.1em]',
                 strength.score === 1 && 'text-ember-400',
                 strength.score === 2 && 'text-amber-300',
                 strength.score === 3 && 'text-mint-300'
@@ -129,8 +129,8 @@ export function PasswordField({
                 <li
                   key={rule.id}
                   className={cx(
-                    'flex items-center gap-1.5 text-[11px] transition-colors',
-                    passed ? 'text-mint-300/80' : 'text-white/30'
+                    'flex items-center gap-1.5 text-[12px] transition-colors',
+                    passed ? 'text-mint-300/80' : 'text-white/45'
                   )}
                 >
                   <span

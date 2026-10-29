@@ -19,10 +19,14 @@ const Models = {
   questions: mongoose.models.AxiomQuestion ?? mongoose.model('AxiomQuestion', permissive, 'questions'),
   exams: mongoose.models.AxiomExam ?? mongoose.model('AxiomExam', permissive, 'exams'),
   responses: mongoose.models.AxiomResponse ?? mongoose.model('AxiomResponse', permissive, 'responses'),
+  attempts: mongoose.models.AxiomAttempt ?? mongoose.model('AxiomAttempt', permissive, 'attempts'),
   papers: mongoose.models.AxiomPaper ?? mongoose.model('AxiomPaper', permissive, 'papers'),
   passwordResets:
     mongoose.models.AxiomPasswordReset ??
     mongoose.model('AxiomPasswordReset', permissive, 'password_resets'),
+  contactMessages:
+    mongoose.models.AxiomContactMessage ??
+    mongoose.model('AxiomContactMessage', permissive, 'contact_messages'),
   auditLogs:
     mongoose.models.AxiomAuditLog ?? mongoose.model('AxiomAuditLog', permissive, 'audit_logs')
 };
@@ -38,11 +42,12 @@ export async function initMongo(): Promise<boolean> {
   try {
     await mongoose.connect(config.mongoUri, { serverSelectionTimeoutMS: 3000 });
     ready = true;
-    const [users, questions, exams, responses, papers, passwordResets, auditLogs] = await Promise.all([
+    const [users, questions, exams, responses, attempts, papers, passwordResets, auditLogs] = await Promise.all([
       Models.users.find().lean(),
       Models.questions.find().lean(),
       Models.exams.find().lean(),
       Models.responses.find().lean(),
+      Models.attempts.find().lean(),
       Models.papers.find().lean(),
       Models.passwordResets.find().lean(),
       Models.auditLogs.find().sort({ at: -1 }).limit(2000).lean()
@@ -54,6 +59,7 @@ export async function initMongo(): Promise<boolean> {
     if (questions.length) store.questions = clean(questions);
     if (exams.length) store.exams = clean(exams);
     if (responses.length) store.responses = clean(responses);
+    if (attempts.length) store.attempts = clean(attempts);
     if (papers.length) store.papers = clean(papers);
     if (passwordResets.length) store.passwordResets = clean(passwordResets);
     if (auditLogs.length) {
@@ -77,12 +83,27 @@ export async function initMongo(): Promise<boolean> {
   }
 }
 
-/** Write-through mirror (fire and forget — never blocks a live exam). */
+/**
+ * Write-through mirror (fire and forget — never blocks a live exam).
+ * A field that is `undefined` is removed from the stored document: `$set`
+ * alone would leave the old value in MongoDB, and it would come back on the
+ * next boot (e.g. a paper still pointing at a deleted session).
+ */
 export function persist(collection: keyof typeof Models, doc: { id: string } & Record<string, unknown>): void {
   if (!ready) return;
   const { id, ...rest } = doc;
+  const $set: Record<string, unknown> = {};
+  const $unset: Record<string, ''> = {};
+  for (const [key, value] of Object.entries(rest)) {
+    if (value === undefined) $unset[key] = '';
+    else $set[key] = value;
+  }
+  const update: Record<string, unknown> = {};
+  if (Object.keys($set).length) update.$set = $set;
+  if (Object.keys($unset).length) update.$unset = $unset;
+  if (!Object.keys(update).length) return;
   Models[collection]
-    .updateOne({ _id: id }, { $set: rest }, { upsert: true })
+    .updateOne({ _id: id }, update, { upsert: true })
     .catch((err: Error) => console.warn('[mongo] persist failed', err.message));
 }
 

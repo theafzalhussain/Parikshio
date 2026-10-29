@@ -26,7 +26,7 @@ export function AiStatusChip({ ai }: { ai?: AiEvaluation }) {
       </Badge>
     );
   return (
-    <Badge tone={ai.needsReview ? 'amber' : 'violet'} className="normal-case tracking-normal">
+    <Badge tone={ai.needsReview ? 'amber' : 'royal'} className="normal-case tracking-normal">
       {ai.needsReview ? <ShieldAlert className="h-3 w-3" /> : <Sparkles className="h-3 w-3" />}
       AI {Math.round((ai.confidence ?? 0) * 100)}%{ai.needsReview ? ' · check' : ''}
     </Badge>
@@ -40,11 +40,11 @@ const MODE_META: Record<GradingMode, { label: string; icon: typeof Bot }> = {
 };
 
 export function GradedByTag({ mode }: { mode?: GradingMode }) {
-  if (!mode) return <span className="text-[11px] text-white/35">not graded yet</span>;
+  if (!mode) return <span className="text-[12px] text-white/50">not graded yet</span>;
   const meta = MODE_META[mode];
   const Icon = meta.icon;
   return (
-    <span className="inline-flex items-center gap-1 text-[11px] text-white/55">
+    <span className="inline-flex items-center gap-1 text-[12px] text-white/70">
       <Icon className="h-3 w-3" /> graded by {meta.label}
     </span>
   );
@@ -67,7 +67,7 @@ export function AiEngineBadge({ status, busy }: { status: GradingStatus | null; 
       </Badge>
     );
   return (
-    <Badge tone="violet" className="normal-case tracking-normal">
+    <Badge tone="royal" className="normal-case tracking-normal">
       {inFlight > 0 ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
       AI grader {inFlight > 0 ? `· ${inFlight} in queue` : status.ai.autoGrade ? '· auto' : '· on demand'}
     </Badge>
@@ -97,7 +97,7 @@ export function AiEvaluationCard({
     if (!aiEnabled) return null;
     return (
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-white/10 p-3">
-        <p className="text-[12px] text-white/45">No AI evaluation for this answer yet.</p>
+        <p className="text-[13px] text-white/60">No AI evaluation for this answer yet.</p>
         <Button size="sm" variant="outline" onClick={onRerun} loading={rerunning}>
           <Sparkles className="h-3.5 w-3.5" /> Evaluate with AI
         </Button>
@@ -107,22 +107,22 @@ export function AiEvaluationCard({
 
   if (isAiBusy(ai))
     return (
-      <div className="flex items-center gap-2.5 rounded-xl border border-sky-400/20 bg-sky-400/[0.05] p-3 text-[12px] text-sky-200">
+      <div className="flex items-center gap-2.5 rounded-xl border border-sky-400/20 bg-sky-400/[0.05] p-3 text-[13px] text-sky-200">
         <Loader2 className="h-4 w-4 animate-spin" />
         {ai.status === 'queued' ? 'Queued for AI evaluation…' : 'AI is evaluating this answer…'}
-        <span className="ml-auto text-[11px] text-white/35">the score appears here automatically</span>
+        <span className="ml-auto text-[12px] text-white/50">the score appears here automatically</span>
       </div>
     );
 
   if (ai.status === 'failed')
     return (
       <div className="space-y-2 rounded-xl border border-ember-500/30 bg-ember-500/[0.06] p-3">
-        <p className="flex items-center gap-1.5 text-[12px] font-medium text-ember-400">
+        <p className="flex items-center gap-1.5 text-[13px] font-medium text-ember-400">
           <AlertTriangle className="h-3.5 w-3.5" /> AI evaluation failed
         </p>
-        <p className="break-words text-[11.5px] leading-relaxed text-white/50">{ai.error ?? 'Unknown error'}</p>
+        <p className="break-words text-[12.5px] leading-relaxed text-white/65">{ai.error ?? 'Unknown error'}</p>
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] text-white/35">Score it by hand below, or try again.</span>
+          <span className="text-[12px] text-white/50">Score it by hand below, or try again.</span>
           {aiEnabled && (
             <Button size="sm" variant="secondary" onClick={onRerun} loading={rerunning}>
               <RotateCw className="h-3.5 w-3.5" /> Retry AI
@@ -135,15 +135,15 @@ export function AiEvaluationCard({
   const score = ai.score ?? 0;
   const pct = ai.maxPoints > 0 ? Math.round((score / ai.maxPoints) * 100) : 0;
   return (
-    <div className="space-y-3 rounded-xl border border-aurora-400/25 bg-aurora-500/[0.06] p-3.5">
+    <div className="space-y-3 rounded-xl border border-royal-400/25 bg-royal-500/[0.06] p-3.5">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-aurora-100">
+        <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-[0.12em] text-royal-100">
           <Sparkles className="h-3.5 w-3.5" /> AI evaluation
         </span>
         <Badge tone={ai.verdict === 'correct' ? 'mint' : ai.verdict === 'partial' ? 'amber' : 'ember'}>{ai.verdict}</Badge>
         <span className="num ml-auto text-[15px] font-semibold text-white">
           {score}
-          <span className="text-white/35">/{ai.maxPoints}</span>
+          <span className="text-white/50">/{ai.maxPoints}</span>
         </span>
       </div>
 
@@ -155,20 +155,20 @@ export function AiEvaluationCard({
       </div>
 
       {ai.needsReview && (
-        <p className="flex items-start gap-1.5 rounded-lg bg-amber-400/10 px-2.5 py-1.5 text-[11.5px] text-amber-200">
+        <p className="flex items-start gap-1.5 rounded-lg bg-amber-400/10 px-2.5 py-1.5 text-[12.5px] text-amber-200">
           <ShieldAlert className="mt-px h-3.5 w-3.5 shrink-0" />
           Flagged for a human check — low confidence or the answer tries to instruct the grader.
         </p>
       )}
 
-      <p className="text-[12.5px] leading-relaxed text-white/80">{ai.feedback}</p>
+      <p className="text-[13.5px] leading-relaxed text-white/80">{ai.feedback}</p>
 
       {!!(ai.strengths?.length || ai.improvements?.length) && (
         <div className="grid gap-2 sm:grid-cols-2">
           {!!ai.strengths?.length && (
             <div>
-              <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-mint-300/70">earned marks</p>
-              <ul className="space-y-1 text-[11.5px] text-white/60">
+              <p className="mb-1 text-[11px] uppercase tracking-[0.12em] text-mint-300/70">earned marks</p>
+              <ul className="space-y-1 text-[12.5px] text-white/70">
                 {ai.strengths.map((s) => (
                   <li key={s} className="flex gap-1.5">
                     <span className="text-mint-300">+</span>
@@ -180,8 +180,8 @@ export function AiEvaluationCard({
           )}
           {!!ai.improvements?.length && (
             <div>
-              <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-amber-300/70">lost marks</p>
-              <ul className="space-y-1 text-[11.5px] text-white/60">
+              <p className="mb-1 text-[11px] uppercase tracking-[0.12em] text-amber-300/70">lost marks</p>
+              <ul className="space-y-1 text-[12.5px] text-white/70">
                 {ai.improvements.map((s) => (
                   <li key={s} className="flex gap-1.5">
                     <span className="text-amber-300">−</span>
@@ -195,7 +195,7 @@ export function AiEvaluationCard({
       )}
 
       <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-2.5">
-        <span className="text-[10.5px] text-white/35">
+        <span className="text-[11.5px] text-white/50">
           {ai.model} · confidence {Math.round((ai.confidence ?? 0) * 100)}%
           {ai.latencyMs ? ` · ${fmtMs(ai.latencyMs)}` : ''}
           {response.gradedBy === 'manual' ? ' · overridden by faculty' : ''}

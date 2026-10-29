@@ -14,7 +14,7 @@ import {
  *
  * The popup returns an ID token which we hand to our own backend
  * (`POST /api/auth/google`). The backend verifies it against Google's public
- * certificates and mints a normal Axiom session — so Firebase never becomes a
+ * certificates and mints a normal Parikshio session — so Firebase never becomes a
  * second source of truth for who a user is.
  *
  * Every value below is a public client identifier (that is how Firebase web
@@ -91,7 +91,7 @@ export class GoogleSignInError extends Error {
 /**
  * Opens the Google popup and returns a freshly minted Firebase ID token.
  * We immediately sign out of Firebase afterwards: the token has already been
- * exchanged for an Axiom session, so keeping Firebase state around would only
+ * exchanged for a Parikshio session, so keeping Firebase state around would only
  * create two competing notions of "logged in".
  */
 export async function getGoogleIdToken(): Promise<string> {

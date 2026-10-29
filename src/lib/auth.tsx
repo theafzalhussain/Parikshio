@@ -21,8 +21,11 @@ interface AuthState {
   clearSessionNotice: () => void;
   login: (email: string, password: string) => Promise<PublicUser>;
   register: (payload: RegisterPayload) => Promise<PublicUser>;
-  /** Runs the Google popup, exchanges the ID token for an Axiom session. */
-  loginWithGoogle: (opts?: { org?: string }) => Promise<PublicUser>;
+  /**
+   * Runs the Google popup, exchanges the ID token for a Parikshio session.
+   * `mode: 'signin'` refuses to create a new account for an unknown address.
+   */
+  loginWithGoogle: (opts?: { org?: string; mode?: 'signin' }) => Promise<PublicUser>;
   requestPasswordReset: (email: string) => Promise<{ message: string; devLink?: string }>;
   resetPassword: (token: string, password: string) => Promise<PublicUser>;
   changePassword: (currentPassword: string, password: string) => Promise<void>;
@@ -132,12 +135,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loginWithGoogle = useCallback(
-    async (opts?: { org?: string }) => {
+    async (opts?: { org?: string; mode?: 'signin' }) => {
       // Popup first — if the user cancels we never touch our own backend.
       const idToken = await getGoogleIdToken();
       const res = await api<SessionResponse & { created: boolean }>('/auth/google', {
         method: 'POST',
-        body: { idToken, org: opts?.org },
+        body: { idToken, org: opts?.org, mode: opts?.mode },
         skipAuthRedirect: true
       });
       persist(res.token, res.user);

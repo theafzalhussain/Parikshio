@@ -145,3 +145,12 @@ export function initials(name: string): string {
 export function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ');
 }
+
+/** The name to greet someone by: "Dr. Meera Sharma" → "Meera". */
+export function firstName(name: string): string {
+  const cleaned = name
+    .replace(/^Faculty\s*·\s*/, '')
+    .replace(/^(Dr|Prof|Mr|Mrs|Ms|Mx)\.?\s+/i, '')
+    .trim();
+  return cleaned.split(/\s+/)[0] || name.trim();
+}

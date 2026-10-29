@@ -17,14 +17,11 @@ export function Label({
   htmlFor?: string;
 }) {
   return (
-    <div className="mb-1.5 flex items-baseline justify-between gap-3">
-      <label
-        htmlFor={htmlFor}
-        className="text-[11.5px] font-medium uppercase tracking-[0.12em] text-white/45"
-      >
+    <div className="mb-2 flex items-baseline justify-between gap-3">
+      <label htmlFor={htmlFor} className="text-[13.5px] font-medium text-white/85">
         {children}
       </label>
-      {hint && <span className="text-[11px] text-white/25">{hint}</span>}
+      {hint && <span className="text-right text-[12px] text-white/45">{hint}</span>}
     </div>
   );
 }
@@ -45,11 +42,11 @@ export function GroupLabel({
   id: string;
 }) {
   return (
-    <div className="mb-1.5 flex items-baseline justify-between gap-3">
-      <p id={id} className="text-[11.5px] font-medium uppercase tracking-[0.12em] text-white/45">
+    <div className="mb-2 flex items-baseline justify-between gap-3">
+      <p id={id} className="text-[13.5px] font-medium text-white/85">
         {children}
       </p>
-      {hint && <span className="text-[11px] text-white/25">{hint}</span>}
+      {hint && <span className="text-right text-[12px] text-white/45">{hint}</span>}
     </div>
   );
 }
@@ -75,10 +72,10 @@ export function Select({
 }: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
-      className={cx('input-base appearance-none bg-ink-900 pr-9', className)}
+      className={cx('input-base appearance-none bg-ink-900 pr-10', className)}
       style={{
         backgroundImage:
-          "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='rgba(255,255,255,0.4)' stroke-width='1.6'><path d='M3 6l5 5 5-5'/></svg>\")",
+          "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='rgba(235,207,149,0.7)' stroke-width='1.6'><path d='M3 6l5 5 5-5'/></svg>\")",
         backgroundRepeat: 'no-repeat',
         backgroundPosition: 'right 12px center'
       }}
@@ -102,19 +99,19 @@ export function Toggle({
     <button
       type="button"
       onClick={() => onChange(!checked)}
-      className="flex items-center gap-2.5 text-[12.5px] text-white/60 focus-ring"
+      className="flex items-center gap-2.5 rounded-lg text-[13.5px] text-white/75 focus-ring"
       aria-pressed={checked}
     >
       <span
         className={cx(
-          'relative h-5 w-9 rounded-full transition',
-          checked ? 'bg-aurora-500' : 'bg-white/15'
+          'relative h-6 w-11 shrink-0 rounded-full ring-1 ring-inset transition duration-200',
+          checked ? 'bg-gold-400 ring-gold-300/60' : 'bg-white/[0.12] ring-white/10'
         )}
       >
         <span
           className={cx(
-            'absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all',
-            checked ? 'left-[18px]' : 'left-0.5'
+            'absolute top-1 h-4 w-4 rounded-full shadow-[0_1px_3px_rgba(0,0,0,0.4)] transition-all duration-200',
+            checked ? 'left-6 bg-ink-950' : 'left-1 bg-white'
           )}
         />
       </span>
@@ -133,17 +130,18 @@ export function SegmentedControl<T extends string>({
   options: { value: T; label: string }[];
 }) {
   return (
-    <div className="inline-flex rounded-xl border border-white/10 bg-ink-900/60 p-1">
+    <div className="inline-flex rounded-xl border border-white/10 bg-ink-900/70 p-1">
       {options.map((opt) => (
         <button
           key={opt.value}
           type="button"
           onClick={() => onChange(opt.value)}
+          aria-pressed={value === opt.value}
           className={cx(
-            'rounded-lg px-3 py-1.5 text-[12px] font-medium transition',
+            'rounded-lg px-3.5 py-1.5 text-[13px] font-medium transition focus-ring',
             value === opt.value
-              ? 'bg-white/[0.09] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]'
-              : 'text-white/45 hover:text-white/75'
+              ? 'bg-white/[0.1] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]'
+              : 'text-white/55 hover:text-white/85'
           )}
         >
           {opt.label}

@@ -54,7 +54,7 @@ export function GoogleButton({
         onClick={onClick}
         disabled={disabled || loading || unavailable}
         className={cx(
-          'focus-ring group relative inline-flex h-12 w-full select-none items-center justify-center gap-3 rounded-xl border border-white/12 bg-white/[0.06] text-sm font-medium text-white/90 transition-all duration-200',
+          'focus-ring group relative inline-flex h-12 w-full select-none items-center justify-center gap-3 rounded-xl border border-white/[0.12] bg-white/[0.06] text-sm font-medium text-white/90 transition-all duration-200',
           'hover:border-white/25 hover:bg-white/[0.1] active:translate-y-px',
           'disabled:pointer-events-none disabled:opacity-45'
         )}
@@ -67,9 +67,9 @@ export function GoogleButton({
         {loading ? 'Opening Google…' : label}
       </button>
       {unavailable && (
-        <p className="mt-2 text-center text-[11px] leading-relaxed text-white/30">
+        <p className="mt-2 text-center text-[12px] leading-relaxed text-white/45">
           Google sign-in is off — add your Firebase keys to{' '}
-          <code className="rounded bg-white/[0.06] px-1 py-0.5 font-mono text-[10px]">.env</code> and restart.
+          <code className="rounded bg-white/[0.06] px-1 py-0.5 font-mono text-[11px]">.env</code> and restart.
         </p>
       )}
     </div>

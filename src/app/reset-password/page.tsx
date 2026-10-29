@@ -76,21 +76,21 @@ function ResetPasswordForm() {
               <Link2Off className="h-4 w-4" />
             </span>
             <div className="min-w-0">
-              <p className="text-[13px] font-medium text-white/85">No reset token found</p>
-              <p className="mt-1 text-[12px] leading-relaxed text-white/45">
+              <p className="text-[14px] font-medium text-white/85">No reset token found</p>
+              <p className="mt-1 text-[13px] leading-relaxed text-white/60">
                 Request a fresh link and open it from your inbox — tokens expire after 30 minutes and work only
                 once.
               </p>
             </div>
           </div>
         </div>
-        <LinkButton href="/forgot-password" variant="lime" size="lg" className="mt-5 w-full">
+        <LinkButton href="/forgot-password" variant="gold" size="lg" className="mt-5 w-full">
           Request a new link
           <ArrowRight className="h-4 w-4" />
         </LinkButton>
-        <p className="mt-5 text-center text-[12px] text-white/40">
-          <Link href="/login" className="focus-ring rounded font-medium text-lime-300 transition hover:text-lime-200">
-            Back to sign in
+        <p className="mt-5 text-center text-[13px] text-white/55">
+          <Link href="/login" className="focus-ring rounded font-medium text-gold-300 transition hover:text-gold-200">
+            Back to log in
           </Link>
         </p>
       </>
@@ -104,7 +104,7 @@ function ResetPasswordForm() {
         sub={
           email ? (
             <>
-              Setting a new password for <span className="font-medium text-white/70">{email}</span>.
+              Setting a new password for <span className="font-medium text-white/80">{email}</span>.
             </>
           ) : (
             'Pick something you have not used on this account before.'
@@ -129,28 +129,28 @@ function ResetPasswordForm() {
             placeholder="Re-enter your new password"
             autoComplete="new-password"
           />
-          {mismatch && <p className="mt-1.5 text-[11px] text-ember-400">Passwords do not match</p>}
+          {mismatch && <p className="mt-1.5 text-[12px] text-ember-400">Passwords do not match</p>}
         </div>
 
         <div className="flex items-start gap-2.5 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
-          <LogOut className="mt-0.5 h-3.5 w-3.5 shrink-0 text-white/35" />
-          <p className="text-[11.5px] leading-relaxed text-white/40">
+          <LogOut className="mt-0.5 h-3.5 w-3.5 shrink-0 text-white/50" />
+          <p className="text-[12.5px] leading-relaxed text-white/55">
             Saving this will sign you out of every other device.
           </p>
         </div>
 
         {error && <AuthAlert>{error}</AuthAlert>}
 
-        <Button type="submit" size="lg" variant="lime" className="w-full" loading={busy} disabled={!canSubmit}>
+        <Button type="submit" size="lg" variant="gold" className="w-full" loading={busy} disabled={!canSubmit}>
           Update password
           {!busy && <ArrowRight className="h-4 w-4" />}
         </Button>
       </form>
 
-      <p className="mt-5 text-center text-[12px] text-white/40">
+      <p className="mt-5 text-center text-[13px] text-white/55">
         Changed your mind?{' '}
-        <Link href="/login" className="focus-ring rounded font-medium text-lime-300 transition hover:text-lime-200">
-          Back to sign in
+        <Link href="/login" className="focus-ring rounded font-medium text-gold-300 transition hover:text-gold-200">
+          Back to log in
         </Link>
       </p>
     </>
@@ -165,7 +165,7 @@ export default function ResetPasswordPage() {
       heading={
         <>
           One new password and you are{' '}
-          <span className="font-display italic text-lime-300">back in.</span>
+          <span className="font-display italic gold-text">back in.</span>
         </>
       }
       subheading="Your new password is hashed with bcrypt before it is stored. Completing this step revokes every session issued before now."

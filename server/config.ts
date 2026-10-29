@@ -70,7 +70,7 @@ function resolveAppBaseUrl(): string {
     url = new URL(raw);
   } catch {
     throw new Error(
-      `APP_URL must be an absolute URL, such as https://axiom.example.com. Received: ${shown}`
+      `APP_URL must be an absolute URL, such as https://parikshio.tech. Received: ${shown}`
     );
   }
   if (!url.hostname || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
@@ -83,6 +83,29 @@ function resolveAppBaseUrl(): string {
     console.warn(`[config] APP_URL normalised to its origin ${url.origin} (received: ${shown})`);
   }
   return url.origin;
+}
+
+const EMAIL_IN_TEXT = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+
+/**
+ * An email address from the environment. Hosting dashboards make it easy to
+ * save `=support@…`, `"support@…"` or `Name <support@…>`; Brevo rejects all of
+ * those, and every email would then fail quietly. The address inside the value
+ * is used instead, with a warning naming the variable so the typo can be fixed.
+ */
+function emailFromEnv(name: string, fallback = ''): string {
+  const configured = process.env[name] ?? '';
+  const raw = configured.replace(/[\u200B-\u200D\u2060\uFEFF\u202A-\u202E]/g, '').trim();
+  if (!raw) return fallback;
+  const found = EMAIL_IN_TEXT.exec(raw)?.[0] ?? '';
+  if (!found) {
+    console.warn(`[config] ${name} is not an email address (received: ${JSON.stringify(raw.slice(0, 80))}) — ignoring it.`);
+    return fallback;
+  }
+  if (found !== raw) {
+    console.warn(`[config] ${name} has extra characters around the address; using ${found} (received: ${JSON.stringify(raw.slice(0, 80))}).`);
+  }
+  return found.toLowerCase();
 }
 
 function resolveOfflineSyncGraceMs(): number {
@@ -144,19 +167,29 @@ export const config = {
   /** Trusted public origin used to build password-reset links. */
   appBaseUrl: resolveAppBaseUrl(),
   /**
-   * Brevo (transactional email). Only used to deliver the password-reset link.
-   * Email sending is enabled only when BREVO_API_KEY and a sender address are set.
+   * Brevo (transactional email): password-reset links, contact-form messages
+   * to the team and the sender's confirmation copy. Sending is enabled only when
+   * BREVO_API_KEY and a valid sender address are set; the sender must be a
+   * verified sender (or on an authenticated domain) in the Brevo account.
    */
   brevo: {
     apiKey: (process.env.BREVO_API_KEY ?? '').trim(),
-    senderEmail: (process.env.BREVO_SENDER_EMAIL ?? '').trim(),
-    senderName: (process.env.BREVO_SENDER_NAME ?? 'Parikshio').trim(),
+    senderEmail: emailFromEnv('BREVO_SENDER_EMAIL'),
+    senderName: (process.env.BREVO_SENDER_NAME ?? 'Parikshio').trim().replace(/^["']|["']$/g, '') || 'Parikshio',
     get enabled() {
       return this.apiKey.length > 0 && this.senderEmail.length > 0;
     }
   },
   /** Password-reset link lifetime (ms). */
   passwordResetTtlMs: 30 * 60 * 1000,
+  /**
+   * Where contact-form messages (including faculty access requests) are
+   * emailed; reply-to is the person who wrote in. Same address as the site's
+   * CONTACT_EMAIL (src/lib/site.ts) unless CONTACT_INBOX_EMAIL overrides it.
+   */
+  contact: {
+    inbox: emailFromEnv('CONTACT_INBOX_EMAIL', 'support@parikshio.tech')
+  },
   /**
    * Gemini — AI evaluation of short / long answers.
    * Enabled only when GEMINI_API_KEY is set; without it subjective answers fall

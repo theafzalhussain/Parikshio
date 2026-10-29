@@ -13,7 +13,8 @@ export function Panel({
     <div
       className={cx(
         'panel',
-        hover && 'transition duration-300 hover:border-white/15 hover:bg-white/[0.045] hover:shadow-lift',
+        hover &&
+          'transition duration-300 ease-out hover:-translate-y-0.5 hover:border-gold-200/20 hover:bg-ink-880/80 hover:shadow-lift',
         className
       )}
     >
@@ -39,24 +40,24 @@ export function SectionHead({
     <div className={cx('flex flex-wrap items-end justify-between gap-4', className)}>
       <div className="min-w-0">
         {eyebrow && <p className="eyebrow mb-2">{eyebrow}</p>}
-        <h2 className="text-xl font-semibold tracking-[-0.01em] text-white sm:text-[22px]">{title}</h2>
-        {sub && <p className="mt-1.5 max-w-2xl text-[13px] leading-relaxed text-white/45">{sub}</p>}
+        <h2 className="font-display text-[22px] font-medium leading-tight text-white sm:text-[24px]">{title}</h2>
+        {sub && <p className="mt-2 max-w-2xl text-[14px] leading-relaxed text-white/60">{sub}</p>}
       </div>
       {action && <div className="shrink-0">{action}</div>}
     </div>
   );
 }
 
-type Tone = 'neutral' | 'violet' | 'lime' | 'mint' | 'ember' | 'sky' | 'amber';
+type Tone = 'neutral' | 'royal' | 'gold' | 'mint' | 'ember' | 'sky' | 'amber';
 
 const tones: Record<Tone, string> = {
-  neutral: 'bg-white/[0.06] text-white/60 ring-white/10',
-  violet: 'bg-aurora-500/12 text-aurora-100 ring-aurora-400/25',
-  lime: 'bg-lime-400/12 text-lime-300 ring-lime-400/25',
-  mint: 'bg-mint-500/12 text-mint-300 ring-mint-400/25',
-  ember: 'bg-ember-500/12 text-ember-400 ring-ember-500/25',
-  sky: 'bg-sky-400/10 text-sky-300 ring-sky-400/25',
-  amber: 'bg-amber-400/12 text-amber-300 ring-amber-400/25'
+  neutral: 'bg-white/[0.06] text-white/70 ring-white/10',
+  royal: 'bg-royal-500/[0.14] text-royal-100 ring-royal-400/30',
+  gold: 'bg-gold-400/[0.12] text-gold-200 ring-gold-300/30',
+  mint: 'bg-mint-500/[0.13] text-mint-300 ring-mint-400/30',
+  ember: 'bg-ember-500/[0.13] text-ember-300 ring-ember-500/30',
+  sky: 'bg-sky-400/[0.11] text-sky-200 ring-sky-400/30',
+  amber: 'bg-amber-400/[0.12] text-amber-200 ring-amber-400/30'
 };
 
 export function Badge({
@@ -73,7 +74,7 @@ export function Badge({
   return (
     <span
       className={cx(
-        'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] ring-1 ring-inset',
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ring-1 ring-inset',
         tones[tone],
         className
       )}
@@ -89,7 +90,7 @@ export function Stat({
   value,
   hint,
   icon,
-  tone = 'violet',
+  tone = 'royal',
   className
 }: {
   label: string;
@@ -102,20 +103,27 @@ export function Stat({
   return (
     <div
       className={cx(
-        'relative overflow-hidden rounded-2xl border border-white/[0.07] bg-gradient-to-b from-white/[0.045] to-white/[0.015] p-4',
+        'group relative overflow-hidden rounded-2xl border border-white/[0.075] bg-ink-900/70 p-4 shadow-card transition duration-300 hover:border-white/[0.14] sm:p-5',
         className
       )}
+      style={{ backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.01) 70%)' }}
     >
+      {/* Champagne hairline across the top edge. */}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-5 top-0 h-px bg-gradient-to-r from-transparent via-gold-200/30 to-transparent"
+      />
       <div className="flex items-start justify-between gap-3">
-        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-white/40">{label}</p>
+        <p className="text-[11.5px] font-semibold uppercase tracking-[0.14em] text-white/55">{label}</p>
         {icon && (
-          <span className={cx('grid h-7 w-7 place-items-center rounded-lg ring-1 ring-inset', tones[tone])}>
+          // Hidden on the narrowest phones so a one-word label like "Accuracy" keeps its room.
+          <span className={cx('grid h-8 w-8 shrink-0 place-items-center rounded-xl ring-1 ring-inset max-[359px]:hidden', tones[tone])}>
             {icon}
           </span>
         )}
       </div>
-      <p className="num mt-2 text-2xl font-semibold text-white">{value}</p>
-      {hint && <p className="mt-1 text-[11.5px] text-white/35">{hint}</p>}
+      <p className="num mt-2.5 text-[28px] font-semibold leading-none text-white">{value}</p>
+      {hint && <p className="mt-2 text-[12.5px] leading-snug text-white/50">{hint}</p>}
     </div>
   );
 }
@@ -136,10 +144,14 @@ export function EmptyState({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.015] px-6 py-14 text-center">
-      {icon && <div className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/[0.05] text-white/40">{icon}</div>}
-      <p className="text-sm font-medium text-white/85">{title}</p>
-      {body && <p className="mt-1.5 max-w-sm text-[12.5px] leading-relaxed text-white/40">{body}</p>}
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/[0.12] bg-white/[0.015] px-6 py-14 text-center">
+      {icon && (
+        <div className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-gold-400/[0.08] text-gold-200 ring-1 ring-inset ring-gold-300/20">
+          {icon}
+        </div>
+      )}
+      <p className="text-[15px] font-medium text-white/90">{title}</p>
+      {body && <p className="mt-1.5 max-w-sm text-[13.5px] leading-relaxed text-white/55">{body}</p>}
       {action && <div className="mt-5">{action}</div>}
     </div>
   );

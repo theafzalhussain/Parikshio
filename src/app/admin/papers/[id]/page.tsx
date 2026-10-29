@@ -9,6 +9,7 @@ import {
   ArrowUpRight,
   Check,
   FileText,
+  Layers,
   Pencil,
   Radio,
   Rocket,
@@ -18,6 +19,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { AdminShell } from '@/components/AdminShell';
+import { BulkPushDialog } from '@/components/admin/BulkPushDialog';
 import { Badge, Divider, EmptyState, Panel, SectionHead } from '@/components/ui/Panel';
 import { Button, IconButton, LinkButton } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Field';
@@ -47,6 +49,7 @@ export default function PaperWorkbenchPage() {
   const [search, setSearch] = useState('');
   const [bulkTimer, setBulkTimer] = useState(45);
   const [applying, setApplying] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -189,11 +192,18 @@ export default function PaperWorkbenchPage() {
       }
       action={
         detail?.exam ? (
-          <LinkButton href={`/admin/exams/${detail.exam.id}`} variant="lime" size="sm">
-            <Radio className="h-3.5 w-3.5" /> Control room
-          </LinkButton>
+          <div className="flex flex-wrap items-center gap-2">
+            {detail.exam.status !== 'ended' && questions.length > 0 && (
+              <Button variant="secondary" size="sm" onClick={() => setBulkOpen(true)}>
+                <Layers className="h-3.5 w-3.5" /> Push all together
+              </Button>
+            )}
+            <LinkButton href={`/admin/exams/${detail.exam.id}`} variant="gold" size="sm">
+              <Radio className="h-3.5 w-3.5" /> Control room
+            </LinkButton>
+          </div>
         ) : (
-          <Button variant="lime" size="sm" loading={publishing} onClick={() => publish()}>
+          <Button variant="gold" size="sm" loading={publishing} onClick={() => publish()}>
             <Rocket className="h-3.5 w-3.5" /> Publish session
           </Button>
         )
@@ -206,14 +216,14 @@ export default function PaperWorkbenchPage() {
       ) : (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <Link href="/admin/papers" className="inline-flex items-center gap-1.5 text-[12px] text-white/40 hover:text-white">
+            <Link href="/admin/papers" className="inline-flex items-center gap-1.5 text-[13px] text-white/55 hover:text-white">
               <ArrowLeft className="h-3.5 w-3.5" /> All papers
             </Link>
             <div className="flex flex-wrap items-center gap-2">
               {detail.exam && (
                 <>
                   <StatusPill status={detail.exam.status} />
-                  <span className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[11px] tracking-[0.14em] text-white/55">
+                  <span className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[12px] tracking-[0.14em] text-white/70">
                     {detail.exam.code}
                   </span>
                 </>
@@ -245,21 +255,21 @@ export default function PaperWorkbenchPage() {
               }
             ].map((s) => (
               <div key={s.k} className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-white/[0.045] to-white/[0.015] p-4">
-                <p className="text-[10.5px] font-medium uppercase tracking-[0.16em] text-white/40">{s.k}</p>
+                <p className="text-[11.5px] font-medium uppercase tracking-[0.16em] text-white/55">{s.k}</p>
                 <p className="num mt-1.5 text-[19px] font-semibold text-white">{s.v}</p>
-                <p className="mt-0.5 text-[11px] text-white/30">{s.hint}</p>
+                <p className="mt-0.5 text-[12px] text-white/45">{s.hint}</p>
               </div>
             ))}
           </div>
 
           {paper.warnings.length > 0 && (
             <Panel className="border-amber-400/20 bg-amber-400/[0.04] p-4">
-              <p className="flex items-center gap-2 text-[12px] font-medium text-amber-300">
+              <p className="flex items-center gap-2 text-[13px] font-medium text-amber-300">
                 <AlertTriangle className="h-3.5 w-3.5" /> Parser notes for this file
               </p>
               <ul className="mt-2 space-y-1">
                 {paper.warnings.map((w) => (
-                  <li key={w} className="text-[11.5px] leading-relaxed text-white/45">
+                  <li key={w} className="text-[12.5px] leading-relaxed text-white/60">
                     • {w}
                   </li>
                 ))}
@@ -270,7 +280,7 @@ export default function PaperWorkbenchPage() {
           {/* toolbar */}
           <Panel className="flex flex-wrap items-center gap-2.5 p-3">
             <div className="relative min-w-[180px] flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/25" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -279,17 +289,17 @@ export default function PaperWorkbenchPage() {
               />
             </div>
             <div className="flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-ink-900/60 p-1">
-              <Timer className="ml-1.5 h-3.5 w-3.5 text-white/30" />
+              <Timer className="ml-1.5 h-3.5 w-3.5 text-white/45" />
               <input
                 type="number"
                 min={5}
                 max={3600}
                 value={bulkTimer}
                 onChange={(e) => setBulkTimer(Number(e.target.value))}
-                className="num w-14 bg-transparent text-[12.5px] text-white/80 outline-none"
+                className="num w-14 bg-transparent text-[13.5px] text-white/80 outline-none"
                 aria-label="Bulk timer seconds"
               />
-              <span className="text-[11px] text-white/30">s for all</span>
+              <span className="text-[12px] text-white/45">s for all</span>
               <Button variant="secondary" size="sm" loading={applying} onClick={applyTimerToAll}>
                 Apply
               </Button>
@@ -315,15 +325,15 @@ export default function PaperWorkbenchPage() {
                 return (
                   <Panel key={q.id} hover className="p-4">
                     <div className="flex flex-wrap items-start gap-3">
-                      <span className="num mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-[11.5px] font-semibold text-white/45 ring-1 ring-inset ring-white/10">
+                      <span className="num mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-[12.5px] font-semibold text-white/60 ring-1 ring-inset ring-white/10">
                         {q.sourceIndex ?? index + 1}
                       </span>
 
-                      <div className="min-w-0 flex-1">
+                      <div className="min-w-[12rem] flex-1">
                         <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
                           <TypePill type={q.type} />
                           <Badge tone="neutral">{typeLabel(q.type)}</Badge>
-                          <span className="num text-[11px] text-white/35">{q.points} pts</span>
+                          <span className="num text-[12px] text-white/50">{q.points} pts</span>
                           {needsReview ? (
                             <Badge tone="amber">
                               <AlertTriangle className="h-3 w-3" /> key missing
@@ -335,7 +345,7 @@ export default function PaperWorkbenchPage() {
                           )}
                         </div>
 
-                        <p className="text-[13.5px] leading-relaxed text-white/85">{q.prompt}</p>
+                        <p className="break-words text-[14.5px] leading-relaxed text-white/85">{q.prompt}</p>
 
                         {(q.type === 'mcq' || q.type === 'truefalse') && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -343,15 +353,15 @@ export default function PaperWorkbenchPage() {
                               <span
                                 key={i}
                                 className={cx(
-                                  'inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11.5px]',
+                                  'inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2 py-1 text-[12.5px]',
                                   i === q.correctOptionIndex
                                     ? 'border-mint-400/40 bg-mint-500/10 text-mint-200'
-                                    : 'border-white/[0.08] bg-white/[0.02] text-white/45'
+                                    : 'border-white/[0.08] bg-white/[0.02] text-white/60'
                                 )}
                               >
-                                {i === q.correctOptionIndex && <Check className="h-3 w-3" />}
-                                <span className="font-mono">{String.fromCharCode(65 + i)}</span>
-                                <span className="max-w-[240px] truncate">{opt}</span>
+                                {i === q.correctOptionIndex && <Check className="h-3 w-3 shrink-0" />}
+                                <span className="shrink-0 font-mono">{String.fromCharCode(65 + i)}</span>
+                                <span className="min-w-0 truncate sm:max-w-[260px]">{opt}</span>
                               </span>
                             ))}
                           </div>
@@ -359,16 +369,16 @@ export default function PaperWorkbenchPage() {
 
                         {q.type !== 'mcq' && q.type !== 'truefalse' && (
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                            <span className="text-[10px] uppercase tracking-[0.12em] text-white/25">accepted</span>
+                            <span className="text-[11px] uppercase tracking-[0.12em] text-white/40">accepted</span>
                             {q.acceptedAnswers.length === 0 ? (
-                              <span className="text-[11.5px] text-amber-300/80">
+                              <span className="text-[12.5px] text-amber-300/80">
                                 {q.type === 'long' ? 'manual review' : 'no key — add one to auto-grade'}
                               </span>
                             ) : (
                               q.acceptedAnswers.map((a) => (
                                 <span
                                   key={a}
-                                  className="rounded-md border border-mint-400/25 bg-mint-500/10 px-1.5 py-0.5 text-[11px] text-mint-200"
+                                  className="max-w-full break-words rounded-md border border-mint-400/25 bg-mint-500/10 px-1.5 py-0.5 text-[12px] text-mint-200"
                                 >
                                   {a}
                                 </span>
@@ -379,9 +389,9 @@ export default function PaperWorkbenchPage() {
                       </div>
 
                       {/* per-question controls */}
-                      <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                      <div className="flex w-full flex-wrap items-center justify-end gap-2 md:w-auto">
                         <div className="flex items-center gap-1 rounded-xl border border-white/[0.08] bg-ink-900/70 px-2 py-1">
-                          <Timer className="h-3.5 w-3.5 text-white/30" />
+                          <Timer className="h-3.5 w-3.5 text-white/45" />
                           <input
                             type="number"
                             min={5}
@@ -392,14 +402,14 @@ export default function PaperWorkbenchPage() {
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                             }}
-                            className="num w-12 bg-transparent text-[12.5px] text-white/85 outline-none"
+                            className="num w-12 bg-transparent text-[13.5px] text-white/85 outline-none"
                             aria-label={`Timer seconds for question ${q.sourceIndex ?? index + 1}`}
                           />
-                          <span className="text-[10.5px] text-white/30">s</span>
+                          <span className="text-[11.5px] text-white/45">s</span>
                         </div>
                         <Button
                           size="sm"
-                          variant="lime"
+                          variant="gold"
                           loading={busyId === q.id}
                           onClick={() => pushQuestion(q)}
                           className="shrink-0"
@@ -427,8 +437,8 @@ export default function PaperWorkbenchPage() {
           <Panel className="p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-[12.5px] font-medium text-white/80">Ready to run this paper?</p>
-                <p className="mt-0.5 text-[11.5px] text-white/40">
+                <p className="text-[13.5px] font-medium text-white/80">Ready to run this paper?</p>
+                <p className="mt-0.5 text-[12.5px] text-white/55">
                   {detail.exam
                     ? `Session ${detail.exam.code} holds all ${paper.questionCount} questions in paper order — push them one by one from the control room.`
                     : 'Publishing creates one session with every question in paper order.'}
@@ -436,11 +446,11 @@ export default function PaperWorkbenchPage() {
               </div>
               <div className="flex gap-2">
                 {detail.exam ? (
-                  <LinkButton href={`/admin/exams/${detail.exam.id}`} variant="lime" size="sm">
+                  <LinkButton href={`/admin/exams/${detail.exam.id}`} variant="gold" size="sm">
                     <Radio className="h-3.5 w-3.5" /> Open control room <ArrowUpRight className="h-3.5 w-3.5" />
                   </LinkButton>
                 ) : (
-                  <Button variant="lime" size="sm" loading={publishing} onClick={() => publish()}>
+                  <Button variant="gold" size="sm" loading={publishing} onClick={() => publish()}>
                     <Rocket className="h-3.5 w-3.5" /> Publish session
                   </Button>
                 )}
@@ -464,6 +474,18 @@ export default function PaperWorkbenchPage() {
           setTimers((prev) => ({ ...prev, [updated.id]: updated.timerSeconds }));
         }}
       />
+
+      {detail?.exam && (
+        <BulkPushDialog
+          open={bulkOpen}
+          onClose={() => setBulkOpen(false)}
+          examId={detail.exam.id}
+          questions={questions}
+          initialTimers={timers}
+          defaults={detail.exam.settings?.setDefaults}
+          onPushed={(id) => router.push(`/admin/exams/${id}`)}
+        />
+      )}
     </AdminShell>
   );
 }

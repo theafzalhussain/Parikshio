@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// Axiom Live — shared domain types (client + server)
+// Parikshio — shared domain types (client + server)
 // ─────────────────────────────────────────────────────────────
 
 export type Role = 'admin' | 'student';
@@ -96,6 +96,119 @@ export interface ActiveWindow {
   locked: boolean;
 }
 
+// ── Self-paced sets (bulk push) ────────────────────────────────
+
+/** Options an admin picks when pushing several questions at once. */
+export interface QuestionSetOptions {
+  /** Students can read each prompt in the list before they start its timer. */
+  revealPrompts: boolean;
+  /** Offer the next question automatically after a submit, skip or timeout. */
+  autoAdvance: boolean;
+  /** Students may give up on an open question before its timer runs out. */
+  allowSkip: boolean;
+}
+
+/** One question inside a set, with the allowance chosen at push time. */
+export interface QuestionSetItem {
+  questionId: string;
+  timerSeconds: number;
+  /** When the item was pushed, or last re-opened for students who missed it. */
+  pushedAt: number;
+}
+
+/**
+ * A batch of questions pushed together. Every student sees the whole list and
+ * picks the order; each question's timer starts only when that student opens it.
+ */
+export interface QuestionSet extends QuestionSetOptions {
+  id: string;
+  pushedAt: number;
+  items: QuestionSetItem[];
+  closed: boolean;
+  closedAt?: number;
+}
+
+export type AttemptStatus = 'open' | 'answered' | 'expired' | 'skipped';
+
+/** One student's own timer on one question of a set (server authoritative). */
+export interface QuestionAttempt {
+  id: string;
+  examId: string;
+  setId: string;
+  questionId: string;
+  studentId: string;
+  studentName: string;
+  openedAt: number;
+  deadline: number;
+  status: AttemptStatus;
+  closedAt?: number;
+}
+
+/** Per-session switches an admin can change from the control room. */
+export interface ExamSettings {
+  /** Students see the live leaderboard. */
+  showLeaderboard: boolean;
+  /** Once the session ends, students can see the answer key and explanations. */
+  revealAnswersAfterEnd: boolean;
+  /** Pre-selected options in the bulk push dialog. */
+  setDefaults: QuestionSetOptions;
+}
+
+export type SetItemState = 'available' | 'open' | 'answered' | 'expired' | 'skipped' | 'closed';
+
+/** A set item as one student sees it. */
+export interface StudentSetItem {
+  questionId: string;
+  /** 1-based position inside the set. */
+  index: number;
+  type: QuestionType;
+  topic: string;
+  difficulty: Difficulty;
+  points: number;
+  timerSeconds: number;
+  state: SetItemState;
+  /** Present when prompts are revealed up front, or once this student has opened it. */
+  prompt?: string;
+  /** The full question (with options) while this student's timer is running. */
+  question?: StudentQuestion;
+  openedAt?: number;
+  deadline?: number;
+}
+
+export interface StudentSetView extends QuestionSetOptions {
+  id: string;
+  pushedAt: number;
+  closed: boolean;
+  items: StudentSetItem[];
+  /** The question this student currently has open, if any. */
+  openQuestionId: string | null;
+}
+
+/** Post-session review row for one question. */
+export interface ReviewItem {
+  questionId: string;
+  index: number;
+  type: QuestionType;
+  prompt: string;
+  options: string[];
+  points: number;
+  myAnswer: string | null;
+  grade: Grade | null;
+  awarded: number;
+  /** Only when the session reveals its answer key after it ends. */
+  correctAnswer?: string;
+  explanation?: string;
+}
+
+/** Admin-side live view of a set. */
+export interface SetMonitor {
+  set: QuestionSet;
+  items: { questionId: string; opened: number; answered: number; inProgress: number; missed: number }[];
+  inProgress: { studentId: string; studentName: string; questionId: string; index: number; deadline: number }[];
+  /** Distinct students who have opened at least one question. */
+  students: number;
+}
+
 export interface Exam {
   id: string;
   code: string;
@@ -113,6 +226,10 @@ export interface Exam {
     endsAt: number;
     locked: boolean;
   } | null;
+  /** The most recent self-paced set, open or closed. Absent on older sessions. */
+  set?: QuestionSet | null;
+  /** Absent on sessions created before settings existed — read via `examSettings()`. */
+  settings?: ExamSettings;
   classroomCourseId?: string;
   classroomCourseName?: string;
   classroomCourseWorkId?: string;
@@ -130,7 +247,13 @@ export interface ExamPublic {
   status: ExamStatus;
   totalQuestions: number;
   active: (ActiveWindow & { question: StudentQuestion }) | null;
+  /** The latest self-paced set, from this student's point of view. */
+  set: StudentSetView | null;
   myAnswers: Record<string, { answer: string; grade: Grade; awarded: number }>;
+  /** Whether this session shows the leaderboard to students. */
+  showLeaderboard: boolean;
+  /** Question-by-question review, only once the session has ended. */
+  review?: ReviewItem[];
   endedAt?: number;
 }
 
@@ -263,6 +386,10 @@ export interface AdminExamRow extends Exam {
   pushedCount: number;
   participation: number;
   avgScore: number;
+  /** Answers recorded in the session — shown before a delete. */
+  responseCount: number;
+  /** Settings with defaults filled in, so the list can open the edit dialog directly. */
+  settings: ExamSettings;
 }
 
 export interface StudentTabHiddenEvent {
@@ -279,6 +406,8 @@ export interface ServerToClientEvents {
   'question:pushed': (payload: { examId: string; active: ActiveWindow & { question: StudentQuestion } }) => void;
   'question:locked': (payload: { examId: string; questionId: string }) => void;
   'exam:ended': (payload: { examId: string }) => void;
+  /** Faculty deleted the session; students leave the room. */
+  'exam:removed': (payload: { examId: string }) => void;
   'leaderboard:update': (payload: { examId: string; entries: LeaderboardEntry[] }) => void;
   'response:new': (payload: { examId: string; response: Response; questionPrompt: string }) => void;
   /** Staff only — a response's grade or AI evaluation state changed. */
@@ -287,6 +416,8 @@ export interface ServerToClientEvents {
   'answer:graded': (payload: { examId: string; questionId: string; grade: Grade; awarded: number }) => void;
   /** Staff only — a student hid the live exam tab. */
   'student:tab-hidden': (payload: StudentTabHiddenEvent) => void;
+  /** Staff only — someone opened, answered, skipped or ran out of time on a set question. */
+  'set:progress': (payload: { examId: string; monitor: SetMonitor | null }) => void;
   'time:sync': (payload: { serverTime: number }) => void;
   'notice': (payload: { kind: 'info' | 'success' | 'warn'; message: string }) => void;
   'paper:imported': (payload: { paperId: string; name: string; questions: number }) => void;

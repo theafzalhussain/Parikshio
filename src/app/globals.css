@@ -4,7 +4,7 @@
 
 :root {
   color-scheme: dark;
-  --ink: #05060a;
+  --ink: #060a14;
   /* Shared easing so every transition in the app decelerates the same way. */
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -21,12 +21,28 @@ html {
 
 body {
   background: var(--ink);
-  color: #eceef7;
+  color: #e9ecf5;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   overflow-x: hidden;
   /* Inter's refined alternates: straighter l, open 6/9, single-storey a. */
   font-feature-settings: 'cv02' 1, 'cv03' 1, 'cv04' 1, 'liga' 1, 'calt' 1;
+}
+
+/*
+ * Fine film grain over the whole canvas. It is a static, tiled texture on its
+ * own fixed layer — painted once, never repainted on scroll — and it removes
+ * the colour banding dark gradients otherwise show on most displays.
+ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.045;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.6 0'/></filter><rect width='100%' height='100%' filter='url(%23g)'/></svg>");
 }
 
 /* Headings read better when the last line is not a single orphan word. */
@@ -40,9 +56,14 @@ p {
   text-wrap: pretty;
 }
 
+/* Programmatic focus targets (sections after an in-page jump) need no ring. */
+[tabindex='-1']:focus {
+  outline: none;
+}
+
 ::selection {
-  background: rgba(203, 255, 61, 0.85);
-  color: #0a0b12;
+  background: rgba(223, 184, 115, 0.9);
+  color: #060a14;
 }
 
 /* thin, quiet scrollbars */
@@ -54,40 +75,46 @@ p {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.12);
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(235, 207, 149, 0.35);
   background-clip: content-box;
 }
 /* Firefox has no ::-webkit-scrollbar; this is its equivalent. */
 @supports (scrollbar-width: thin) {
   * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+    scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
   }
 }
 
 @layer components {
+  /**
+   * Base surface. Deliberately no backdrop-filter: a blur under every card has
+   * to be recomputed on each scroll frame, which is what makes dashboards feel
+   * heavy on student laptops and phones. A tinted, layered fill reads the same.
+   */
   .panel {
-    @apply rounded-3xl border border-white/[0.07] bg-white/[0.025] shadow-card backdrop-blur-xl;
+    @apply min-w-0 rounded-3xl border border-white/[0.075] bg-ink-900/70 shadow-card;
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012) 60%);
   }
   .panel-tight {
-    @apply rounded-2xl border border-white/[0.07] bg-white/[0.03];
+    @apply rounded-2xl border border-white/[0.075] bg-white/[0.03];
   }
+
+  /** Ruled-paper texture — the quiet signature behind every screen. */
   .grid-veil {
-    background-image:
-      linear-gradient(to right, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
-    background-size: 72px 72px;
-    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 10%, transparent 75%);
-    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 10%, transparent 75%);
+    background-image: linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    background-size: 100% 46px;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 10%, transparent 72%);
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 10%, transparent 72%);
   }
   .dot-veil {
-    background-image: radial-gradient(rgba(255, 255, 255, 0.16) 1px, transparent 1px);
+    background-image: radial-gradient(rgba(235, 207, 149, 0.22) 1px, transparent 1px);
     background-size: 22px 22px;
     mask-image: radial-gradient(ellipse 60% 50% at 50% 50%, black, transparent 70%);
     -webkit-mask-image: radial-gradient(ellipse 60% 50% at 50% 50%, black, transparent 70%);
@@ -103,14 +130,14 @@ p {
     border-radius: 9999px;
     pointer-events: none;
   }
-  .aura-violet {
-    background: radial-gradient(closest-side, rgba(99, 56, 245, 0.3), rgba(99, 56, 245, 0.09) 55%, transparent 78%);
+  .aura-royal {
+    background: radial-gradient(closest-side, rgba(98, 121, 245, 0.24), rgba(98, 121, 245, 0.07) 55%, transparent 78%);
+  }
+  .aura-gold {
+    background: radial-gradient(closest-side, rgba(223, 184, 115, 0.17), rgba(223, 184, 115, 0.05) 55%, transparent 78%);
   }
   .aura-mint {
-    background: radial-gradient(closest-side, rgba(34, 214, 155, 0.2), rgba(34, 214, 155, 0.06) 55%, transparent 78%);
-  }
-  .aura-lime {
-    background: radial-gradient(closest-side, rgba(203, 255, 61, 0.16), rgba(203, 255, 61, 0.05) 55%, transparent 78%);
+    background: radial-gradient(closest-side, rgba(43, 180, 135, 0.14), rgba(43, 180, 135, 0.04) 55%, transparent 78%);
   }
 
   .sheen {
@@ -128,8 +155,8 @@ p {
     bottom: 0;
     left: 0;
     width: 60%;
-    background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.14), transparent);
-    animation: sweep 4.5s var(--ease-out-soft) infinite;
+    background: linear-gradient(100deg, transparent, rgba(255, 244, 220, 0.12), transparent);
+    animation: sweep 5.5s var(--ease-out-soft) infinite;
     pointer-events: none;
     opacity: 0.35;
     will-change: transform;
@@ -139,33 +166,82 @@ p {
     font-feature-settings: 'tnum' 1;
     letter-spacing: -0.02em;
   }
+
+  /** Small-caps label above a heading, in muted champagne. */
   .eyebrow {
-    @apply text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45;
+    @apply text-[11.5px] font-semibold uppercase tracking-[0.2em] text-gold-200/75;
+  }
+  /** Eyebrow led by a short gold rule — for page-level headings. */
+  .eyebrow-rule {
+    @apply inline-flex items-center gap-3;
+  }
+  .eyebrow-rule::before {
+    content: '';
+    width: 1.75rem;
+    height: 1px;
+    background: linear-gradient(90deg, rgba(235, 207, 149, 0), rgba(235, 207, 149, 0.85));
   }
   .hairline {
     @apply border-t border-white/[0.07];
   }
   .focus-ring {
-    @apply outline-none focus-visible:ring-2 focus-visible:ring-aurora-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950;
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-gold-300/80 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950;
   }
   .gradient-text {
-    background: linear-gradient(100deg, #ffffff 10%, #bca6ff 48%, #cbff3d 96%);
+    background: linear-gradient(100deg, #ffffff 5%, #f5e3ba 50%, #dfb873 95%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
   }
+  /** Metallic champagne for accent words in headlines. */
+  .gold-text {
+    background: linear-gradient(175deg, #fbefd2 0%, #ebcf95 38%, #d4ab62 68%, #a9813d 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    /* Italic overhang would otherwise be clipped by the text box. */
+    padding-right: 0.08em;
+  }
+
+  /**
+   * 1px gradient border (champagne → transparent → indigo) drawn with a mask,
+   * so it follows the element's radius. Add to any positioned card.
+   */
+  .gold-edge {
+    position: relative;
+  }
+  .gold-edge::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(140deg, rgba(235, 207, 149, 0.6), rgba(235, 207, 149, 0.06) 38%, rgba(129, 151, 255, 0.05) 70%, rgba(129, 151, 255, 0.35));
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  /**
+   * 16px on phones keeps iOS Safari from zooming the page every time a field
+   * is focused; desktop drops back to a denser 14px.
+   */
   .input-base {
-    @apply w-full rounded-xl border border-white/10 bg-ink-900/70 px-3.5 py-2.5 text-sm text-white/90 placeholder-white/30 transition
-      hover:border-white/20 focus:border-aurora-400/60 focus:outline-none focus:ring-4 focus:ring-aurora-500/10;
+    @apply w-full rounded-xl border border-white/[0.11] bg-ink-900/80 px-3.5 py-3 text-base text-white/95 placeholder-white/35 shadow-[inset_0_1px_2px_rgba(0,0,0,0.35)] transition duration-200
+      hover:border-white/20 focus:border-gold-300/60 focus:bg-ink-900 focus:outline-none focus:ring-4 focus:ring-gold-400/10
+      disabled:cursor-not-allowed disabled:opacity-60 sm:py-2.5 sm:text-sm;
   }
 
   /** Keyboard-only escape hatch past the header. */
   .skip-link {
-    @apply pointer-events-none fixed left-4 top-4 z-[200] -translate-y-24 rounded-xl border border-aurora-400/40 bg-ink-900 px-4 py-2.5
+    @apply pointer-events-none fixed left-4 top-4 z-[200] -translate-y-24 rounded-xl border border-gold-300/40 bg-ink-900 px-4 py-2.5
       text-[13px] font-medium text-white opacity-0 transition duration-200;
   }
   .skip-link:focus-visible {
-    @apply pointer-events-auto translate-y-0 opacity-100 outline-none ring-2 ring-aurora-400/70;
+    @apply pointer-events-auto translate-y-0 opacity-100 outline-none ring-2 ring-gold-300/80;
   }
 
   /**
@@ -176,6 +252,195 @@ p {
     content-visibility: auto;
     contain-intrinsic-size: auto 600px;
   }
+  /*
+   * Set briefly before an in-page jump: skipped sections stand in at their
+   * estimated height, so a scroll computed against them lands short. Once
+   * rendered, `auto` remembers the real size and the estimate is never used again.
+   */
+  .render-all .defer-paint {
+    content-visibility: visible;
+  }
+
+  /* ── student dashboard: 3D motion ─────────────────────────────
+   * Transform-only animation (compositor work, no repaints), and nothing
+   * moves for people who prefer reduced motion: the global rule at the end of
+   * this file cuts every animation and transition to a single frame.
+   */
+
+  /** Pointer-driven tilt; Tilt3D writes the --rx/--ry/--ts/--g* variables. */
+  .tilt-3d {
+    position: relative;
+    transform-style: preserve-3d;
+    transform: perspective(1100px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) scale3d(var(--ts, 1), var(--ts, 1), 1);
+  }
+  .tilt-glare {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: radial-gradient(520px circle at var(--gx, 50%) var(--gy, 0%), rgba(255, 240, 210, 0.13), transparent 42%);
+    opacity: var(--glare, 0);
+  }
+  /* Layers that rise out of a tilting card. Every element between the card and
+     the layer needs `preserve-3d`, or the depth is flattened away. */
+  .preserve-3d {
+    transform-style: preserve-3d;
+  }
+  .depth-sm {
+    transform: translateZ(22px);
+  }
+  .depth-md {
+    transform: translateZ(38px);
+  }
+  .depth-lg {
+    transform: translateZ(70px);
+  }
+
+  /** Knowledge cube: six glass faces, slowly turning, floating over a shadow. */
+  .cube-float {
+    --cube: 4rem;
+    width: var(--cube);
+    height: calc(var(--cube) * 1.45);
+    animation: cube-bob 6s ease-in-out infinite;
+  }
+  @media (min-width: 640px) {
+    .cube-float {
+      --cube: 6.25rem;
+    }
+  }
+  .cube-scene {
+    width: var(--cube);
+    height: var(--cube);
+    perspective: 520px;
+  }
+  .cube-3d {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    transform-style: preserve-3d;
+    animation: cube-spin 28s linear infinite;
+  }
+  .cube-face {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    border-radius: 18%;
+    border: 1px solid rgba(235, 207, 149, 0.45);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.02) 55%),
+      linear-gradient(160deg, rgba(31, 42, 74, 0.94), rgba(10, 15, 29, 0.94));
+    box-shadow:
+      inset 0 0 18px rgba(223, 184, 115, 0.16),
+      0 0 22px rgba(98, 121, 245, 0.12);
+  }
+  .cube-face-1 {
+    transform: rotateY(0deg) translateZ(calc(var(--cube) / 2));
+  }
+  .cube-face-2 {
+    transform: rotateY(90deg) translateZ(calc(var(--cube) / 2));
+  }
+  .cube-face-3 {
+    transform: rotateY(180deg) translateZ(calc(var(--cube) / 2));
+  }
+  .cube-face-4 {
+    transform: rotateY(-90deg) translateZ(calc(var(--cube) / 2));
+  }
+  .cube-face-5 {
+    transform: rotateX(90deg) translateZ(calc(var(--cube) / 2));
+  }
+  .cube-face-6 {
+    transform: rotateX(-90deg) translateZ(calc(var(--cube) / 2));
+  }
+  .cube-shadow {
+    width: 70%;
+    height: 10%;
+    margin: 18% auto 0;
+    border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(223, 184, 115, 0.35), transparent);
+    animation: cube-shadow 6s ease-in-out infinite;
+  }
+
+  /** Stat chips drift a little, each on its own beat. */
+  .chip-float {
+    animation: chip-float 5.5s ease-in-out infinite;
+  }
+
+  /** Badges flip in 3D; the back carries how to earn them. */
+  .flip-card {
+    position: relative;
+    display: block;
+    height: 10.5rem;
+    perspective: 900px;
+  }
+  .flip-inner {
+    position: relative;
+    display: block;
+    height: 100%;
+    transform-style: preserve-3d;
+    transition: transform 0.7s var(--ease-out-soft);
+  }
+  .flip-card.is-flipped .flip-inner {
+    transform: rotateY(180deg);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .flip-card:not(.is-flipped):hover .flip-inner {
+      transform: rotateY(14deg) rotateX(-4deg) translateZ(6px);
+    }
+  }
+  .flip-face {
+    position: absolute;
+    inset: 0;
+    border-radius: 1rem;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+  }
+  .flip-back {
+    transform: rotateY(180deg);
+  }
+  .medal::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, 0.55) 48%, transparent 60%);
+    opacity: 0.6;
+    mix-blend-mode: soft-light;
+    pointer-events: none;
+  }
+
+  /** A ruled floor running to the horizon behind the hero. */
+  .horizon {
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 58%;
+    overflow: hidden;
+    perspective: 380px;
+    pointer-events: none;
+    mask-image: linear-gradient(to top, black 10%, transparent 85%);
+    -webkit-mask-image: linear-gradient(to top, black 10%, transparent 85%);
+  }
+  .horizon-plane {
+    position: absolute;
+    left: -25%;
+    right: -25%;
+    bottom: -35%;
+    height: 150%;
+    transform-origin: 50% 100%;
+    background-image:
+      linear-gradient(rgba(223, 184, 115, 0.2) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(129, 151, 255, 0.16) 1px, transparent 1px);
+    background-size: 54px 54px;
+    animation: horizon-run 7s linear infinite;
+  }
+  /* Off screen (see MotionZone): hold every hero animation where it is. */
+  [data-motion='paused'] .cube-float,
+  [data-motion='paused'] .cube-3d,
+  [data-motion='paused'] .cube-shadow,
+  [data-motion='paused'] .chip-float,
+  [data-motion='paused'] .horizon-plane {
+    animation-play-state: paused;
+  }
 }
 
 @layer utilities {
@@ -183,6 +448,47 @@ p {
   .edge-fade-x {
     mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
     -webkit-mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
+  }
+
+  /*
+   * Fraunces, tuned for an institutional voice: sharp terminals and none of
+   * the "wonky" leaning letters. Inter's character variants are reset because
+   * the same feature tags mean different glyphs in the serif.
+   */
+  .font-display {
+    font-variation-settings: 'SOFT' 0, 'WONK' 0;
+    font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+    letter-spacing: -0.012em;
+  }
+}
+
+/*
+ * Scroll-driven reveal. Zero JavaScript: browsers that support view timelines
+ * fade sections up as they enter; everything else (and anyone who prefers
+ * reduced motion) simply sees the content in place.
+ */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal {
+      animation: reveal-up linear both;
+      animation-timeline: view();
+      animation-range: entry 0% cover 24%;
+    }
+  }
+}
+
+/*
+ * `translate` rather than `transform`, so a revealed card can still use a
+ * hover transform without the finished animation pinning it in place.
+ */
+@keyframes reveal-up {
+  from {
+    opacity: 0;
+    translate: 0 28px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
   }
 }
 
@@ -192,6 +498,60 @@ p {
   }
   100% {
     transform: translateX(260%);
+  }
+}
+
+@keyframes cube-spin {
+  0% {
+    transform: rotateX(-22deg) rotateY(0deg);
+  }
+  50% {
+    transform: rotateX(18deg) rotateY(180deg);
+  }
+  100% {
+    transform: rotateX(-22deg) rotateY(360deg);
+  }
+}
+
+@keyframes cube-bob {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 -9px;
+  }
+}
+
+@keyframes cube-shadow {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(0.82);
+    opacity: 0.55;
+  }
+}
+
+@keyframes chip-float {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 -4px;
+  }
+}
+
+/* The plane is tilted back; moving it along its own Y walks the floor forward. */
+@keyframes horizon-run {
+  from {
+    transform: rotateX(74deg) translate3d(0, 0, 0);
+  }
+  to {
+    transform: rotateX(74deg) translate3d(0, 54px, 0);
   }
 }
 
@@ -212,5 +572,14 @@ p {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
+  }
+  /* Rest the cube and the floor at a readable angle instead of the last frame. */
+  .cube-3d {
+    animation: none !important;
+    transform: rotateX(-20deg) rotateY(-32deg);
+  }
+  .horizon-plane {
+    animation: none !important;
+    transform: rotateX(74deg);
   }
 }

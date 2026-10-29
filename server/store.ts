@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { Exam, Paper, PublicUser, Question, Response, Role } from '../shared/types';
+import type { Exam, Paper, PublicUser, Question, QuestionAttempt, Response, Role } from '../shared/types';
 import type { AuditEntry } from './security';
 
 export interface StoredUser extends PublicUser {
@@ -35,13 +35,37 @@ export interface PasswordReset {
   createdAt: number;
 }
 
+/** A message sent through the public contact / feedback form. */
+export interface ContactMessage {
+  id: string;
+  topic: string;
+  role: string;
+  name: string;
+  email: string;
+  org: string;
+  message: string;
+  /** 1–5, only for feedback. */
+  rating: number | null;
+  /** Set when the sender was signed in. */
+  userId: string | null;
+  userRole: Role | null;
+  createdAt: number;
+  /** The email notification to the team inbox went out. */
+  delivered: boolean;
+  /** The "we received your message" email went to the sender. */
+  confirmationSent: boolean;
+}
+
 export interface Store {
   users: StoredUser[];
   questions: Question[];
   exams: Exam[];
   responses: Response[];
+  /** Per-student timers on self-paced set questions. */
+  attempts: QuestionAttempt[];
   papers: Paper[];
   passwordResets: PasswordReset[];
+  contactMessages: ContactMessage[];
   auditLogs: AuditEntry[];
   /** emitted leaderboard cache busting / diagnostics */
   bootedAt: number;
@@ -52,8 +76,10 @@ export const store: Store = {
   questions: [],
   exams: [],
   responses: [],
+  attempts: [],
   papers: [],
   passwordResets: [],
+  contactMessages: [],
   auditLogs: [],
   bootedAt: Date.now()
 };
@@ -139,6 +165,12 @@ export const db = {
   },
   responseById(id: string) {
     return store.responses.find((r) => r.id === id);
+  },
+  attemptsBySet(examId: string, setId: string) {
+    return store.attempts.filter((a) => a.examId === examId && a.setId === setId);
+  },
+  attemptsOf(examId: string, setId: string, studentId: string) {
+    return store.attempts.filter((a) => a.examId === examId && a.setId === setId && a.studentId === studentId);
   }
 };
 

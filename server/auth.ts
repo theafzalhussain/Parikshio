@@ -37,6 +37,12 @@ export function signToken(user: PublicUser, tokenVersion = 0): string {
   return jwt.sign(payload, config.jwtSecret, { expiresIn });
 }
 
+/**
+ * The placeholder institute older sign-ups were given when they left the field
+ * blank. It is hidden in every response rather than rewritten in the database.
+ */
+const LEGACY_PLACEHOLDER_ORG = 'Axiom Institute';
+
 export function publicUser(u: {
   id: string;
   name: string;
@@ -50,7 +56,7 @@ export function publicUser(u: {
     name: u.name,
     email: u.email,
     role: u.role,
-    org: u.org,
+    org: u.org === LEGACY_PLACEHOLDER_ORG ? '' : u.org,
     ...(u.avatarUrl ? { avatarUrl: u.avatarUrl } : {})
   };
 }
@@ -72,11 +78,11 @@ function failureResponse(kind: AuthFailure): { status: number; error: string; co
     case 'missing':
       return { status: 401, error: 'Authentication required', code: 'auth/missing' };
     case 'expired':
-      return { status: 401, error: 'Your session has expired — please sign in again', code: 'auth/expired' };
+      return { status: 401, error: 'Your session has expired — please log in again', code: 'auth/expired' };
     case 'stale':
       return {
         status: 401,
-        error: 'Your password was changed — please sign in again',
+        error: 'Your password was changed — please log in again',
         code: 'auth/password-changed'
       };
     case 'unknown-user':

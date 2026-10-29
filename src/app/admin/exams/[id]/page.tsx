@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
@@ -12,16 +12,23 @@ import {
   Copy,
   EyeOff,
   GraduationCap,
+  Layers,
   Lock,
+  PenLine,
   Radio,
   Send,
   Sparkles,
   Timer,
+  Trash2,
   Users,
   Zap
 } from 'lucide-react';
 import { AdminShell } from '@/components/AdminShell';
 import { AiEngineBadge, AiEvaluationCard, AiStatusChip, GradedByTag, isAiBusy } from '@/components/AiGrading';
+import { BulkPushDialog } from '@/components/admin/BulkPushDialog';
+import { DeleteSessionsDialog } from '@/components/admin/DeleteSessionsDialog';
+import { SessionSettingsDialog } from '@/components/admin/SessionSettingsDialog';
+import { SetMonitorPanel } from '@/components/admin/SetMonitorPanel';
 import { RadialTimer } from '@/components/charts/Charts';
 import { Leaderboard } from '@/components/Leaderboard';
 import { Badge, Divider, EmptyState, Panel, SectionHead } from '@/components/ui/Panel';
@@ -30,23 +37,28 @@ import { Input, Label } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
 import { Avatar, GradePill, Loading, StatusPill, TypePill, typeLabel } from '@/components/ui/Pills';
 import { useToast } from '@/components/ui/Toast';
-import { api, cx, fmtMs, fmtRelative } from '@/lib/api';
+import { api, ApiError, cx, fmtMs, fmtRelative } from '@/lib/api';
 import { useServerClock, useSocket } from '@/lib/socket';
 import type {
   ActiveWindow,
   Exam,
+  ExamSettings,
   GradingStatus,
   LeaderboardEntry,
   Question,
   QuestionType,
   Response,
+  SetMonitor,
   StudentTabHiddenEvent
 } from '@shared/types';
 
 interface Detail {
   exam: Exam;
+  counts: { responses: number; students: number };
   questions: Question[];
   active: (ActiveWindow & { question: { id: string; prompt: string; type: QuestionType } }) | null;
+  set: SetMonitor | null;
+  settings: ExamSettings;
   leaderboard: LeaderboardEntry[];
   grading: GradingStatus;
   responses: (Response & { questionPrompt: string; questionType: QuestionType; maxPoints: number })[];
@@ -94,14 +106,14 @@ function AnswerChip({
   const objective = response.questionType === 'mcq' || response.questionType === 'truefalse';
   if (!objective)
     return (
-      <p className="max-w-[200px] truncate text-[11.5px] italic text-white/45" title={response.answer}>
+      <p className="max-w-[200px] truncate text-[12.5px] italic text-white/60" title={response.answer}>
         “{response.answer}”
       </p>
     );
   const idx = Number(response.answer);
   return (
-    <p className="max-w-[200px] truncate text-[11.5px] text-white/55" title={options[idx]}>
-      <span className="mr-1 rounded bg-white/[0.08] px-1 py-0.5 font-mono text-[10px] text-white/70">
+    <p className="max-w-[200px] truncate text-[12.5px] text-white/70" title={options[idx]}>
+      <span className="mr-1 rounded bg-white/[0.08] px-1 py-0.5 font-mono text-[11px] text-white/80">
         {String.fromCharCode(65 + idx)}
       </span>
       {options[idx] ?? '—'}
@@ -112,9 +124,15 @@ function AnswerChip({
 export default function ControlRoomPage() {
   const params = useParams<{ id: string }>();
   const examId = params?.id ?? '';
+  const router = useRouter();
   const socket = useSocket();
   const { now } = useServerClock(socket);
   const { push } = useToast();
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [missing, setMissing] = useState(false);
+  /** True while this tab is deleting the session itself (its own socket echo is ignored). */
+  const deletingHere = useRef(false);
+  const removedHere = useRef(false);
 
   const [detail, setDetail] = useState<Detail | null>(null);
   const [board, setBoard] = useState<LeaderboardEntry[]>([]);
@@ -133,6 +151,11 @@ export default function ControlRoomPage() {
   const [engine, setEngine] = useState<GradingStatus | null>(null);
   const [aiBusyId, setAiBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [monitor, setMonitor] = useState<SetMonitor | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bulkPushOpen, setBulkPushOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [removeBusy, setRemoveBusy] = useState(false);
   const detailRef = useRef<Detail | null>(null);
   detailRef.current = detail;
 
@@ -143,6 +166,9 @@ export default function ControlRoomPage() {
       setBoard(res.leaderboard);
       setFeed(res.responses);
       setEngine(res.grading);
+      setMonitor(res.set);
+      // Drop selections for questions that are no longer in the session.
+      setSelected((prev) => prev.filter((id) => res.exam.questionIds.includes(id)));
       setOverrides((prev) => {
         const next = { ...prev };
         res.questions.forEach((q) => {
@@ -151,6 +177,10 @@ export default function ControlRoomPage() {
         return next;
       });
     } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setMissing(true);
+        return;
+      }
       push({ kind: 'error', title: 'Could not load session', body: (err as Error).message });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -254,6 +284,9 @@ export default function ControlRoomPage() {
     };
     const onLocked = () => void load();
     const onEnded = () => void load();
+    const onSetProgress = (payload: { examId: string; monitor: SetMonitor | null }) => {
+      if (payload.examId === examId) setMonitor(payload.monitor);
+    };
     const onTabHidden = (event: StudentTabHiddenEvent) => {
       if (event.examId !== examId) return;
       setTabSwitches((previous) => [event, ...previous].slice(0, 20));
@@ -270,6 +303,14 @@ export default function ControlRoomPage() {
     socket.on('student:tab-hidden', onTabHidden);
     socket.on('question:locked', onLocked);
     socket.on('exam:ended', onEnded);
+    socket.on('set:progress', onSetProgress);
+    // Another faculty member deleted this session while it was open here.
+    const onRemoved = (payload: { examId: string }) => {
+      if (payload.examId !== examId || deletingHere.current) return;
+      push({ kind: 'warn', title: 'Session deleted', body: 'This session was deleted from another device.' });
+      router.replace('/admin/exams');
+    };
+    socket.on('exam:removed', onRemoved);
     return () => {
       socket.off('connect', onReconnect);
       socket.off('response:new', onResponse);
@@ -278,7 +319,10 @@ export default function ControlRoomPage() {
       socket.off('student:tab-hidden', onTabHidden);
       socket.off('question:locked', onLocked);
       socket.off('exam:ended', onEnded);
+      socket.off('set:progress', onSetProgress);
+      socket.off('exam:removed', onRemoved);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, examId, detail?.exam.code, load]);
 
   const active = detail?.active ?? null;
@@ -311,6 +355,35 @@ export default function ControlRoomPage() {
       push({ kind: 'error', title: 'Push failed', body: (err as Error).message });
     } finally {
       setBusyId(null);
+    }
+  }
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  /** Detach the selected questions; ones with answers or on screen stay and are reported. */
+  async function removeSelected() {
+    if (selected.length === 0) return;
+    setRemoveBusy(true);
+    try {
+      const res = await api<{ removed: string[]; kept: { id: string; reason: string }[] }>(
+        `/exams/${examId}/questions/remove`,
+        { method: 'POST', body: { questionIds: selected } }
+      );
+      push({
+        kind: res.kept.length ? 'warn' : 'success',
+        title: `${res.removed.length} question${res.removed.length === 1 ? '' : 's'} removed from the session`,
+        body: res.kept.length
+          ? `${res.kept.length} kept — ${[...new Set(res.kept.map((k) => k.reason))].join(', ')}.`
+          : 'They are still in the question bank.'
+      });
+      setSelected([]);
+      await load();
+    } catch (err) {
+      push({ kind: 'error', title: 'Could not remove questions', body: (err as Error).message });
+    } finally {
+      setRemoveBusy(false);
     }
   }
 
@@ -500,23 +573,39 @@ export default function ControlRoomPage() {
       title={exam?.title ?? 'Session'}
       subtitle={exam ? `${exam.subject} · join code ${exam.code} · ${exam.questionIds.length} questions` : undefined}
       action={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <AiEngineBadge status={engine} busy={aiInFlight} />
           {exam && <StatusPill status={exam.status} />}
+          {exam && (
+            <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true)}>
+              <PenLine className="h-3.5 w-3.5" /> Edit
+            </Button>
+          )}
           <LinkButton href={`/admin/analytics/${examId}`} variant="secondary" size="sm">
             <BarChart3 className="h-3.5 w-3.5" /> Analytics
           </LinkButton>
         </div>
       }
     >
-      {!detail || !exam ? (
+      {missing ? (
+        <EmptyState
+          icon={<Radio className="h-5 w-5" />}
+          title="This session no longer exists"
+          body="It may have been deleted. Its questions are still in your question bank."
+          action={
+            <LinkButton href="/admin/exams" size="sm" variant="secondary">
+              <ArrowLeft className="h-3.5 w-3.5" /> All sessions
+            </LinkButton>
+          }
+        />
+      ) : !detail || !exam ? (
         <Panel className="p-6">
           <Loading label="Opening the control room" />
         </Panel>
       ) : (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <Link href="/admin/exams" className="inline-flex items-center gap-1.5 text-[12px] text-white/40 hover:text-white">
+            <Link href="/admin/exams" className="inline-flex items-center gap-1.5 text-[13px] text-white/55 hover:text-white">
               <ArrowLeft className="h-3.5 w-3.5" /> All sessions
             </Link>
             <div className="flex flex-wrap items-center gap-2">
@@ -525,7 +614,7 @@ export default function ControlRoomPage() {
                   navigator.clipboard?.writeText(exam.code);
                   push({ kind: 'info', title: 'Join code copied', body: `Students join with ${exam.code}` });
                 }}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11.5px] text-white/60 transition hover:text-white"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[12.5px] text-white/70 transition hover:text-white"
               >
                 <Copy className="h-3.5 w-3.5" /> {exam.code}
               </button>
@@ -534,23 +623,34 @@ export default function ControlRoomPage() {
                   <CircleStop className="h-3.5 w-3.5" /> End session
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-white/60 hover:text-ember-300"
+                onClick={() => {
+                  deletingHere.current = true;
+                  setDeleteOpen(true);
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" /> Delete
+              </Button>
             </div>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
+          <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr] [&>*]:min-w-0">
             {/* left */}
             <div className="space-y-4">
               {/* now live */}
               <Panel className="relative overflow-hidden">
                 <div className="flex items-center justify-between gap-3 border-b border-white/[0.07] bg-white/[0.02] px-5 py-3">
                   <div className="flex items-center gap-2">
-                    <Radio className={cx('h-3.5 w-3.5', active && !active.locked ? 'text-lime-400' : 'text-white/25')} />
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
+                    <Radio className={cx('h-3.5 w-3.5', active && !active.locked ? 'text-gold-400' : 'text-white/40')} />
+                    <span className="text-[12px] font-semibold uppercase tracking-[0.16em] text-white/65">
                       {active ? (active.locked ? 'locked' : 'now live') : 'idle'}
                     </span>
                   </div>
                   {active && (
-                    <span className="num text-[11px] text-white/35">
+                    <span className="num text-[12px] text-white/50">
                       Question {active.index} of {active.total}
                     </span>
                   )}
@@ -576,7 +676,7 @@ export default function ControlRoomPage() {
                         ].map((s) => (
                           <div key={s.k} className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-2.5">
                             <p className="num text-[15px] font-semibold text-white">{s.v}</p>
-                            <p className="text-[9.5px] uppercase tracking-[0.12em] text-white/30">{s.k}</p>
+                            <p className="text-[10.5px] uppercase tracking-[0.12em] text-white/45">{s.k}</p>
                           </div>
                         ))}
                       </div>
@@ -585,7 +685,7 @@ export default function ControlRoomPage() {
                           <Lock className="h-3.5 w-3.5" /> Lock now
                         </Button>
                         {queued[active.index] && (
-                          <Button variant="lime" size="sm" onClick={() => pushQuestion(queued[active.index])} loading={busyId === queued[active.index].id}>
+                          <Button variant="gold" size="sm" onClick={() => pushQuestion(queued[active.index])} loading={busyId === queued[active.index].id}>
                             <Send className="h-3.5 w-3.5" /> Push next
                           </Button>
                         )}
@@ -598,9 +698,23 @@ export default function ControlRoomPage() {
                         size={150}
                         urgent={!active.locked && remaining < 10_000}
                       />
-                      <p className="text-[10.5px] uppercase tracking-[0.14em] text-white/30">
+                      <p className="text-[11.5px] uppercase tracking-[0.14em] text-white/45">
                         {active.locked ? 'closed' : 'server clock'}
                       </p>
+                    </div>
+                  </div>
+                ) : monitor && !monitor.set.closed ? (
+                  <div className="flex flex-wrap items-center justify-between gap-4 p-5">
+                    <div className="flex items-center gap-3">
+                      <span className="grid h-11 w-11 place-items-center rounded-xl bg-gold-400/[0.1] text-gold-200 ring-1 ring-inset ring-gold-300/30">
+                        <Layers className="h-5 w-5" />
+                      </span>
+                      <div>
+                        <p className="text-[15px] font-medium text-white">A self-paced set is running</p>
+                        <p className="mt-0.5 text-[13px] text-white/55">
+                          Students choose the order; each timer starts when they open a question. Follow it below.
+                        </p>
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -611,7 +725,7 @@ export default function ControlRoomPage() {
                       body={
                         exam.status === 'ended'
                           ? 'Open analytics to review final scores and per-question accuracy.'
-                          : 'Pick a question from the queue below and push it to start the timer.'
+                          : 'Push one question to everyone, or tick several in the queue below and push them together.'
                       }
                       action={
                         exam.status === 'ended' ? (
@@ -620,7 +734,7 @@ export default function ControlRoomPage() {
                           </LinkButton>
                         ) : (
                           queued[0] && (
-                            <Button size="sm" variant="lime" onClick={() => pushQuestion(queued[0])}>
+                            <Button size="sm" variant="gold" onClick={() => pushQuestion(queued[0])}>
                               <Zap className="h-3.5 w-3.5" /> Push question 1
                             </Button>
                           )
@@ -631,51 +745,118 @@ export default function ControlRoomPage() {
                 )}
               </Panel>
 
+              {monitor && (
+                <SetMonitorPanel
+                  examId={examId}
+                  monitor={monitor}
+                  questions={detail.questions}
+                  now={now}
+                  onChanged={() => void load()}
+                />
+              )}
+
               {/* queue */}
               <Panel className="p-5">
                 <SectionHead
                   eyebrow="Queue"
                   title="Question delivery"
-                  sub="Override the timer per push. The lock is enforced server-side, so no answer sneaks in late."
+                  sub="Push one question to everyone with its own timer, or tick several and push them together as a self-paced set."
                 />
-                <div className="mt-4 space-y-2">
+
+                {exam.status !== 'ended' && queued.length > 0 && (
+                  <div className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl border border-white/[0.07] bg-ink-950/40 p-2.5">
+                    <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13px] text-white/75 transition hover:bg-white/[0.04]">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-[#DFB873]"
+                        checked={selected.length > 0 && selected.length === queued.length}
+                        ref={(el) => {
+                          if (el) el.indeterminate = selected.length > 0 && selected.length < queued.length;
+                        }}
+                        onChange={(e) => setSelected(e.target.checked ? queued.map((q) => q.id) : [])}
+                        aria-label="Select all questions"
+                      />
+                      {selected.length ? `${selected.length} selected` : 'Select all'}
+                    </label>
+                    <div className="ml-auto flex flex-wrap items-center gap-2">
+                      {selected.length > 0 && (
+                        <Button variant="ghost" size="sm" onClick={() => setSelected([])}>
+                          Clear
+                        </Button>
+                      )}
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={removeSelected}
+                        loading={removeBusy}
+                        disabled={selected.length === 0}
+                        title="Remove the selected questions from this session (they stay in the bank)"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Remove
+                      </Button>
+                      <Button
+                        variant="gold"
+                        size="sm"
+                        onClick={() => setBulkPushOpen(true)}
+                        disabled={selected.length === 0}
+                      >
+                        <Layers className="h-3.5 w-3.5" /> Push {selected.length || ''} together
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-3 space-y-2">
                   {queued.map((q, idx) => {
                     const isActive = active?.questionId === q.id;
                     const delivered = active ? idx + 1 <= active.index : false;
+                    const isSelected = selected.includes(q.id);
                     return (
                       <div
                         key={q.id}
                         className={cx(
                           'flex flex-wrap items-center gap-3 rounded-2xl border p-3 transition',
                           isActive
-                            ? 'border-lime-400/35 bg-lime-400/[0.06]'
-                            : 'border-white/[0.07] bg-white/[0.02]'
+                            ? 'border-gold-400/35 bg-gold-400/[0.06]'
+                            : isSelected
+                              ? 'border-royal-400/40 bg-royal-500/[0.08]'
+                              : 'border-white/[0.07] bg-white/[0.02]'
                         )}
                       >
+                        {exam.status !== 'ended' && (
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 shrink-0 cursor-pointer accent-[#DFB873]"
+                            checked={isSelected}
+                            onChange={() => toggleSelected(q.id)}
+                            aria-label={`Select question ${idx + 1}`}
+                          />
+                        )}
                         <span
                           className={cx(
-                            'num grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[11px] font-semibold ring-1 ring-inset',
+                            'num grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[12px] font-semibold ring-1 ring-inset',
                             isActive
-                              ? 'bg-lime-400/20 text-lime-200 ring-lime-400/35'
+                              ? 'bg-gold-400/20 text-gold-200 ring-gold-400/35'
                               : delivered
-                                ? 'bg-white/[0.05] text-white/40 ring-white/10'
-                                : 'bg-white/[0.03] text-white/30 ring-white/[0.08]'
+                                ? 'bg-white/[0.05] text-white/55 ring-white/10'
+                                : 'bg-white/[0.03] text-white/45 ring-white/[0.08]'
                           )}
                         >
                           {idx + 1}
                         </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="line-clamp-1 text-[12.5px] text-white/80">{q.prompt}</p>
+                        <div className="min-w-[11rem] flex-1">
+                          <p className="line-clamp-1 text-[13.5px] text-white/80">{q.prompt}</p>
                           <div className="mt-1 flex flex-wrap items-center gap-1.5">
                             <TypePill type={q.type} />
-                            <span className="text-[10.5px] text-white/30">{q.topic}</span>
-                            <span className="num text-[10.5px] text-white/30">· {q.points} pts</span>
-                            {isActive && <Badge tone="lime">on screen</Badge>}
+                            <span className="text-[11.5px] text-white/45">{q.topic}</span>
+                            <span className="num text-[11.5px] text-white/45">· {q.points} pts</span>
+                            {isActive && <Badge tone="gold">on screen</Badge>}
                           </div>
                         </div>
-                        <div className="flex items-center gap-1.5">
+                        {/* Wraps under the question on narrow screens instead of squeezing it. */}
+                        <div className="ml-auto flex items-center gap-1.5">
                           <div className="relative">
-                            <Timer className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-white/25" />
+                            <Timer className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-white/40" />
                             <Input
                               type="number"
                               min={5}
@@ -684,7 +865,7 @@ export default function ControlRoomPage() {
                               onChange={(e) =>
                                 setOverrides((prev) => ({ ...prev, [q.id]: Number(e.target.value) }))
                               }
-                              className="w-[86px] py-1.5 pl-7 text-[12px]"
+                              className="w-[86px] py-1.5 pl-7 text-[13px]"
                               aria-label={`Timer for question ${idx + 1}`}
                             />
                           </div>
@@ -728,13 +909,13 @@ export default function ControlRoomPage() {
                           <Sparkles className="h-3.5 w-3.5" /> AI-grade pending{aiPending ? ` (${aiPending})` : ''}
                         </Button>
                       )}
-                      <Badge tone="lime">{feed.length} captured</Badge>
+                      <Badge tone="gold">{feed.length} captured</Badge>
                     </div>
                   }
                 />
                 <div className="mt-4 max-h-[420px] space-y-2 overflow-y-auto pr-1">
                   {feed.length === 0 && (
-                    <p className="py-10 text-center text-[12px] text-white/30">Waiting for the first answer…</p>
+                    <p className="py-10 text-center text-[13px] text-white/45">Waiting for the first answer…</p>
                   )}
                   {feed.map((r) => (
                     <div
@@ -743,8 +924,8 @@ export default function ControlRoomPage() {
                     >
                       <Avatar name={r.studentName} size={26} />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-[12px] text-white/80">{r.studentName}</p>
-                        <p className="truncate text-[10.5px] text-white/30">
+                        <p className="truncate text-[13px] text-white/80">{r.studentName}</p>
+                        <p className="truncate text-[11.5px] text-white/45">
                           {r.questionPrompt.slice(0, 64)}
                           {r.questionPrompt.length > 64 ? '…' : ''}
                         </p>
@@ -753,7 +934,7 @@ export default function ControlRoomPage() {
                         response={r}
                         options={detail.questions.find((q) => q.id === r.questionId)?.options ?? []}
                       />
-                      <span className="num text-[10.5px] text-white/30">{fmtMs(r.latencyMs)}</span>
+                      <span className="num text-[11.5px] text-white/45">{fmtMs(r.latencyMs)}</span>
                       {isSubjectiveType(r.questionType) && <AiStatusChip ai={r.ai} />}
                       <GradePill grade={r.grade} awarded={r.awarded} points={r.maxPoints} />
                       {r.ai?.status === 'failed' && aiEnabled && r.gradedBy !== 'manual' && (
@@ -778,7 +959,7 @@ export default function ControlRoomPage() {
                             setGrading(r);
                             setGradeValue(String(r.awarded));
                           }}
-                          className="text-[10.5px] text-white/25 underline-offset-2 hover:text-white/60 hover:underline"
+                          className="text-[11.5px] text-white/40 underline-offset-2 hover:text-white/70 hover:underline"
                         >
                           {r.ai?.status === 'done' ? 'review' : 'edit'}
                         </button>
@@ -795,13 +976,13 @@ export default function ControlRoomPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="eyebrow">Ranking</p>
-                    <h3 className="mt-1 text-[15px] font-semibold text-white">Leaderboard</h3>
+                    <h3 className="mt-1.5 font-display text-[20px] font-medium text-white">Leaderboard</h3>
                   </div>
-                  <Badge tone="lime">
+                  <Badge tone="gold">
                     <Users className="h-3 w-3" /> {board.length}
                   </Badge>
                 </div>
-                <p className="mt-1.5 text-[11px] text-white/35">Accuracy first, then response speed.</p>
+                <p className="mt-1.5 text-[12px] text-white/50">Accuracy first, then response speed.</p>
                 <div className="mt-3">
                   <Leaderboard entries={board} max={10} />
                 </div>
@@ -809,7 +990,7 @@ export default function ControlRoomPage() {
 
               <Panel className="p-5">
                 <p className="eyebrow">Session</p>
-                <div className="mt-3 space-y-2.5 text-[12px]">
+                <div className="mt-3 space-y-2.5 text-[13px]">
                   {[
                     ['Join code', exam.code],
                     ['Status', exam.status],
@@ -818,8 +999,8 @@ export default function ControlRoomPage() {
                     ['Created', fmtRelative(exam.createdAt)]
                   ].map(([k, v]) => (
                     <div key={k} className="flex items-center justify-between gap-3">
-                      <span className="text-white/35">{k}</span>
-                      <span className="truncate font-mono text-[11.5px] text-white/75">{v}</span>
+                      <span className="text-white/50">{k}</span>
+                      <span className="truncate font-mono text-[12.5px] text-white/75">{v}</span>
                     </div>
                   ))}
                 </div>
@@ -834,18 +1015,18 @@ export default function ControlRoomPage() {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="eyebrow">Integrity monitor</p>
-                    <h3 className="mt-1 text-[15px] font-semibold text-white">Tab switches</h3>
+                    <h3 className="mt-1.5 font-display text-[20px] font-medium text-white">Tab switches</h3>
                   </div>
                   <Badge tone={tabSwitches.length ? 'amber' : 'neutral'}>
                     <EyeOff className="h-3 w-3" /> {tabSwitches.length}
                   </Badge>
                 </div>
-                <p className="mt-1.5 text-[11px] text-white/35">
+                <p className="mt-1.5 text-[12px] text-white/50">
                   Alerts are sent when a student hides this live exam tab.
                 </p>
                 <div className="mt-3 max-h-56 space-y-2 overflow-y-auto">
                   {tabSwitches.length === 0 ? (
-                    <p className="py-4 text-center text-[11px] text-white/30">No tab switches reported.</p>
+                    <p className="py-4 text-center text-[12px] text-white/45">No tab switches reported.</p>
                   ) : (
                     tabSwitches.map((event) => (
                       <div
@@ -853,12 +1034,12 @@ export default function ControlRoomPage() {
                         className="rounded-xl border border-amber-300/10 bg-amber-300/[0.04] p-2.5"
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <p className="truncate text-[11.5px] font-medium text-white/80">{event.studentName}</p>
-                          <span className="num shrink-0 text-[10px] text-white/35">
+                          <p className="truncate text-[12.5px] font-medium text-white/80">{event.studentName}</p>
+                          <span className="num shrink-0 text-[11px] text-white/50">
                             {new Date(event.hiddenAt).toLocaleTimeString()}
                           </span>
                         </div>
-                        <p className="mt-1 break-all font-mono text-[10px] text-white/35">
+                        <p className="mt-1 break-all font-mono text-[11px] text-white/50">
                           Student ID: {event.studentId}
                         </p>
                       </div>
@@ -871,17 +1052,17 @@ export default function ControlRoomPage() {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="eyebrow">Google Classroom</p>
-                    <h3 className="mt-1 text-[15px] font-semibold text-white">Roster & results</h3>
+                    <h3 className="mt-1.5 font-display text-[20px] font-medium text-white">Roster & results</h3>
                   </div>
                   <GraduationCap className="h-4 w-4 text-sky-300" />
                 </div>
                 {!classroom?.configured ? (
-                  <p className="mt-3 rounded-lg border border-amber-300/10 bg-amber-300/[0.04] p-3 text-[11px] leading-relaxed text-amber-100/65">
+                  <p className="mt-3 rounded-lg border border-amber-300/10 bg-amber-300/[0.04] p-3 text-[12px] leading-relaxed text-amber-100/65">
                     Google Classroom is not configured on this server. Set the OAuth Client ID and Client Secret to enable it.
                   </p>
                 ) : !classroom.connected ? (
                   <>
-                    <p className="mt-2 text-[11px] leading-relaxed text-white/40">
+                    <p className="mt-2 text-[12px] leading-relaxed text-white/55">
                       Connect a teacher account to link this exam to a course, match the roster to existing student accounts, and publish scores.
                     </p>
                     <Button
@@ -898,25 +1079,25 @@ export default function ControlRoomPage() {
                   <>
                     <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-emerald-300/10 bg-emerald-300/[0.04] p-2.5">
                       <div className="min-w-0">
-                        <p className="text-[10px] uppercase tracking-[0.1em] text-emerald-200/50">Connected teacher</p>
-                        <p className="mt-0.5 truncate text-[11.5px] text-white/75">{classroom.email}</p>
+                        <p className="text-[11px] uppercase tracking-[0.1em] text-emerald-200/50">Connected teacher</p>
+                        <p className="mt-0.5 truncate text-[12.5px] text-white/75">{classroom.email}</p>
                       </div>
                       <button
                         type="button"
                         disabled={classroomBusy}
                         onClick={disconnectClassroom}
-                        className="shrink-0 text-[10px] text-white/35 transition hover:text-rose-200 disabled:opacity-40"
+                        className="shrink-0 text-[11px] text-white/50 transition hover:text-rose-200 disabled:opacity-40"
                       >
                         Disconnect
                       </button>
                     </div>
 
-                    <span className="mt-3 block text-[10px] uppercase tracking-[0.12em] text-white/40">Course for this exam</span>
+                    <span className="mt-3 block text-[11px] uppercase tracking-[0.12em] text-white/55">Course for this exam</span>
                     <select
                       value={selectedClassroomCourse}
                       onChange={(event) => setSelectedClassroomCourse(event.target.value)}
                       disabled={classroomBusy || exam.status === 'ended'}
-                      className="mt-1.5 w-full rounded-lg border border-white/[0.09] bg-[#111419] px-3 py-2 text-[11.5px] text-white/75 outline-none focus:border-sky-300/30 disabled:opacity-50"
+                      className="mt-1.5 w-full rounded-lg border border-white/[0.09] bg-[#111419] px-3 py-2 text-[12.5px] text-white/75 outline-none focus:border-sky-300/30 disabled:opacity-50"
                     >
                       <option value="">Select a Classroom course</option>
                       {classroomCourses.map((course) => (
@@ -939,12 +1120,12 @@ export default function ControlRoomPage() {
                       <>
                         <Divider className="my-3" />
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-[11px] text-white/50">Linked: {exam.classroomCourseName ?? exam.classroomCourseId}</p>
+                          <p className="text-[12px] text-white/65">Linked: {exam.classroomCourseName ?? exam.classroomCourseId}</p>
                           <button
                             type="button"
                             disabled={classroomBusy}
                             onClick={syncClassroomRoster}
-                            className="shrink-0 text-[10px] font-medium text-sky-200/70 transition hover:text-sky-100 disabled:opacity-40"
+                            className="shrink-0 text-[11px] font-medium text-sky-200/70 transition hover:text-sky-100 disabled:opacity-40"
                           >
                             Sync roster
                           </button>
@@ -952,8 +1133,8 @@ export default function ControlRoomPage() {
                         {classroomRoster.length > 0 && (
                           <div className="mt-2 max-h-36 space-y-1.5 overflow-y-auto">
                             {classroomRoster.map((student) => (
-                              <div key={student.classroomUserId} className="flex items-center justify-between gap-2 text-[10.5px]">
-                                <span className="min-w-0 truncate text-white/60">{student.name} · {student.email}</span>
+                              <div key={student.classroomUserId} className="flex items-center justify-between gap-2 text-[11.5px]">
+                                <span className="min-w-0 truncate text-white/70">{student.name} · {student.email}</span>
                                 <span className={cx('shrink-0', student.studentId ? 'text-emerald-200/70' : 'text-amber-200/70')}>
                                   {student.studentId ? 'Matched' : 'No account'}
                                 </span>
@@ -963,7 +1144,7 @@ export default function ControlRoomPage() {
                         )}
                         {exam.classroomPublishStatus && (
                           <div className={cx(
-                            'mt-3 rounded-lg border p-2.5 text-[10.5px]',
+                            'mt-3 rounded-lg border p-2.5 text-[11.5px]',
                             exam.classroomPublishStatus === 'published'
                               ? 'border-emerald-300/10 bg-emerald-300/[0.04] text-emerald-100/70'
                               : 'border-rose-300/10 bg-rose-300/[0.04] text-rose-100/70'
@@ -1007,7 +1188,7 @@ export default function ControlRoomPage() {
             <Button variant="ghost" size="sm" onClick={() => setGrading(null)}>
               Cancel
             </Button>
-            <Button variant="lime" size="sm" onClick={submitGrade}>
+            <Button variant="gold" size="sm" onClick={submitGrade}>
               Save score
             </Button>
           </>
@@ -1017,10 +1198,10 @@ export default function ControlRoomPage() {
           <div className="space-y-4">
             <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-[10.5px] uppercase tracking-[0.12em] text-white/30">student answer</p>
+                <p className="text-[11.5px] uppercase tracking-[0.12em] text-white/45">student answer</p>
                 <GradedByTag mode={gradingRow.gradedBy} />
               </div>
-              <p className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-relaxed text-white/75">
+              <p className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap text-[13.5px] leading-relaxed text-white/75">
                 {gradingRow.answer || '— no answer submitted —'}
               </p>
             </div>
@@ -1054,13 +1235,58 @@ export default function ControlRoomPage() {
               ))}
             </div>
             {gradingRow.ai?.status === 'done' && gradingRow.gradedBy !== 'manual' && (
-              <p className="text-[11px] text-white/35">
+              <p className="text-[12px] text-white/50">
                 Saving here overrides the AI score with your own — the AI evaluation stays on record.
               </p>
             )}
           </div>
         )}
       </Modal>
+
+      {detail && (
+        <>
+          <BulkPushDialog
+            open={bulkPushOpen}
+            onClose={() => setBulkPushOpen(false)}
+            examId={examId}
+            questions={queued.filter((q) => selected.includes(q.id))}
+            initialTimers={overrides}
+            defaults={detail.settings.setDefaults}
+            onPushed={() => {
+              setSelected([]);
+              void load();
+            }}
+          />
+          <SessionSettingsDialog
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            exam={detail.exam}
+            settings={detail.settings}
+            onSaved={() => void load()}
+          />
+          <DeleteSessionsDialog
+            open={deleteOpen}
+            onClose={() => {
+              setDeleteOpen(false);
+              if (!removedHere.current) deletingHere.current = false;
+            }}
+            sessions={[
+              {
+                id: detail.exam.id,
+                title: detail.exam.title,
+                code: detail.exam.code,
+                status: detail.exam.status,
+                students: detail.counts?.students ?? board.length,
+                answers: detail.counts?.responses ?? feed.length
+              }
+            ]}
+            onDeleted={() => {
+              removedHere.current = true;
+              router.replace('/admin/exams');
+            }}
+          />
+        </>
+      )}
 
       <Modal
         open={confirmEnd}
@@ -1079,7 +1305,7 @@ export default function ControlRoomPage() {
           </>
         }
       >
-        <p className="text-[12.5px] leading-relaxed text-white/50">
+        <p className="text-[13.5px] leading-relaxed text-white/65">
           {board.length} students have answered so far with {feed.length} responses captured. Export or review from the
           analytics page after ending.
         </p>

@@ -1,8 +1,10 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter, Instrument_Serif } from 'next/font/google';
+import { Fraunces, Inter } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth';
 import { ToastProvider } from '@/components/ui/Toast';
+import { BrandDefs } from '@/components/Logo';
+import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from '@/lib/site';
 
 /**
  * Both faces are self-hosted by next/font at build time: no runtime request to
@@ -16,35 +18,56 @@ const sans = Inter({
   adjustFontFallback: true
 });
 
-/** Used only for the italic accent words in headings. */
-const display = Instrument_Serif({
+/**
+ * Display serif for headings, question prompts and the wordmark. The variable
+ * build carries optical sizing, so the same file stays crisp at 18px and
+ * elegant at 64px; the SOFT/WONK axes are pinned in globals.css.
+ */
+const display = Fraunces({
   subsets: ['latin'],
-  weight: '400',
-  style: ['italic', 'normal'],
+  style: ['normal', 'italic'],
+  axes: ['opsz', 'SOFT', 'WONK'],
   display: 'swap',
   variable: '--font-display'
 });
 
+const DEFAULT_TITLE = `${SITE_NAME} — Live exams for universities, schools and coaching institutes`;
+
 export const metadata: Metadata = {
+  // Absolute base for the Open Graph image and canonical URLs.
+  metadataBase: new URL(SITE_URL),
   title: {
-    default: 'Axiom Live — Real-time assessment OS for institutes',
-    template: '%s · Axiom Live'
+    default: DEFAULT_TITLE,
+    template: `%s · ${SITE_NAME}`
   },
-  description:
-    'Axiom Live is a real-time educational testing platform: push questions with per-question timers, capture timestamped answers, auto-grade objective questions and read institute-grade analytics instantly.',
-  applicationName: 'Axiom Live',
+  description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
+  keywords: [
+    'online exam platform',
+    'live quiz for classrooms',
+    'assessment software',
+    'mock test platform',
+    'auto grading',
+    'pariksha',
+    SITE_NAME
+  ],
   openGraph: {
-    title: 'Axiom Live — Real-time assessment OS for institutes',
-    description:
-      'Author any question type, push it to every student device with a server-authoritative timer, and watch auto-graded results rank themselves.',
-    siteName: 'Axiom Live',
-    type: 'website'
+    title: DEFAULT_TITLE,
+    description: SITE_DESCRIPTION,
+    siteName: SITE_NAME,
+    type: 'website',
+    locale: 'en_IN',
+    url: '/'
   },
-  twitter: { card: 'summary_large_image' }
+  twitter: {
+    card: 'summary_large_image',
+    title: DEFAULT_TITLE,
+    description: SITE_DESCRIPTION
+  }
 };
 
 export const viewport: Viewport = {
-  themeColor: '#05060A',
+  themeColor: '#060A14',
   width: 'device-width',
   initialScale: 1,
   // Lets the dark UI paint behind the notch/status bar on mobile.
@@ -55,6 +78,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${sans.variable} ${display.variable}`} suppressHydrationWarning>
       <body className="min-h-screen bg-ink-950 font-sans antialiased">
+        {/* Shared SVG gradients for the logo and seal, defined once per page. */}
+        <BrandDefs />
         {/* First tab stop on every page — keyboard users skip the nav. */}
         <a href="#main" className="skip-link">
           Skip to main content

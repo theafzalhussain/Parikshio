@@ -5,6 +5,7 @@ import { cache, cacheKeys } from './cache';
 import { persist } from './mongo';
 import { db, store } from './store';
 import { emitExam, emitStaff, emitUser } from './realtime';
+import { resultSealed, studentsSeeLeaderboard } from './sessionRules';
 import {
   coolingModels,
   evaluateAnswer,
@@ -127,8 +128,9 @@ export function broadcastGradeChange(response: Response, final = true): void {
   void cache.delPrefix(cacheKeys.examPrefix(exam.id));
   emitLeaderboards(exam);
 
-  // Grades unlock at lock time — never reveal one while the question is still open.
-  const stillOpen = exam.current?.questionId === response.questionId && !exam.current.locked;
+  // Grades unlock at lock time — never reveal one while the question is still
+  // open, whether that is a live push or a self-paced set classmates are in.
+  const stillOpen = resultSealed(exam, response.questionId);
   if (!stillOpen) {
     emitUser(response.studentId, 'answer:graded', {
       examId: exam.id,
@@ -151,14 +153,34 @@ function emitLeaderboards(exam: Exam): void {
     setTimeout(() => {
       leaderboardDue.delete(exam.id);
       const entries = rankResponses(db.responsesByExam(exam.id));
-      emitExam(exam.code, 'leaderboard:update', { examId: exam.id, entries });
+      if (studentsSeeLeaderboard(exam)) emitExam(exam.code, 'leaderboard:update', { examId: exam.id, entries });
       emitStaff(exam.code, 'leaderboard:update', { examId: exam.id, entries });
     }, 150)
   );
 }
 
 // ── outcome helpers ───────────────────────────────────────────
+/**
+ * A batch can outlive its answers: deleting a session removes them while the
+ * model is still thinking. Writing a late result back would re-create the row
+ * in MongoDB (persist upserts), so results for removed answers are dropped.
+ */
+function stillStored(response: Response): boolean {
+  return db.responseById(response.id) === response;
+}
+
+/** Drops queued AI work for answers that no longer exist (their session was deleted). */
+export function forgetAiWork(responseIds: Set<string>): void {
+  if (!responseIds.size) return;
+  for (let i = queue.length - 1; i >= 0; i--) {
+    if (!responseIds.has(queue[i]!)) continue;
+    queued.delete(queue[i]!);
+    queue.splice(i, 1);
+  }
+}
+
 function applyResult(response: Response, result: EvaluationResult, started: number): void {
+  if (!stillStored(response)) return;
   const ai = response.ai!;
   const suspicious = result.injectionSuspected || looksLikeInjection(response.answer);
   const evaluation: AiEvaluation = {
@@ -194,6 +216,7 @@ function applyResult(response: Response, result: EvaluationResult, started: numb
 }
 
 function failResponse(response: Response, message: string, model?: string): void {
+  if (!stillStored(response)) return;
   const ai = response.ai ?? { status: 'failed' as const, maxPoints: 0, attempts: 0, requestedAt: Date.now() };
   response.ai = {
     ...ai,
@@ -224,6 +247,7 @@ function failResponse(response: Response, message: string, model?: string): void
 function requeue(responses: Response[]): void {
   const ids: string[] = [];
   for (const response of responses) {
+    if (!stillStored(response)) continue;
     response.ai = { ...response.ai!, status: 'queued' };
     queued.add(response.id);
     ids.push(response.id);

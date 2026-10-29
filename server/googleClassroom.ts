@@ -211,7 +211,10 @@ export function discardClassroomAuthorization(state: string): OAuthState | null 
 }
 
 export function disconnectClassroom(user: StoredUser): void {
-  delete user.googleClassroom;
+  // `undefined`, not `delete`: persist() turns undefined into $unset, so the
+  // stored refresh token is really removed from MongoDB and does not come back
+  // after the next restart.
+  user.googleClassroom = undefined;
   persist('users', user as unknown as { id: string } & Record<string, unknown>);
 }
 
@@ -341,7 +344,7 @@ async function publishExamResultsOnce(exam: Exam): Promise<ClassroomPublishResul
   if (graded.some(({ user }) => responsesByStudent.get(user.id)!.some((response) => response.grade === 'pending'))) {
     throw new Error('Some participating students still have answers awaiting grading. Retry the publish after grading finishes.');
   }
-  if (!graded.length) throw new Error('No existing Axiom student accounts with exam results matched this Classroom roster.');
+  if (!graded.length) throw new Error('No existing Parikshio student accounts with exam results matched this Classroom roster.');
 
   const questions = exam.questionIds.map((id) => db.questionById(id)).filter((question) => question !== undefined);
   const maxPoints = questions.reduce((total, question) => total + question.points, 0);
@@ -354,8 +357,8 @@ async function publishExamResultsOnce(exam: Exam): Promise<ClassroomPublishResul
       {
         method: 'POST',
         body: {
-          title: `${exam.title} — Axiom Live results`,
-          description: `Final scores from the Axiom Live ${exam.subject} assessment.`,
+          title: `${exam.title} — Parikshio results`,
+          description: `Final scores from the Parikshio ${exam.subject} assessment.`,
           workType: 'ASSIGNMENT',
           state: 'PUBLISHED',
           maxPoints

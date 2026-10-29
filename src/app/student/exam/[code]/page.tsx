@@ -5,28 +5,34 @@ import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
-  Check,
+  CheckCircle2,
   CircleCheck,
   CloudUpload,
   Hourglass,
+  Layers,
   Lock,
   Radio,
   RefreshCw,
   Send,
+  ShieldAlert,
   Sparkles,
   Timer,
   Trophy,
   Wifi,
   WifiOff,
+  XCircle,
   Zap
 } from 'lucide-react';
 import { StudentShell } from '@/components/StudentShell';
 import { RadialTimer } from '@/components/charts/Charts';
 import { Leaderboard } from '@/components/Leaderboard';
 import { OfflineQueuePanel } from '@/components/OfflineQueuePanel';
+import { AnswerInput, ShortcutHint } from '@/components/student/AnswerInput';
+import { MobileTimerBar } from '@/components/student/MobileTimerBar';
+import { ReviewList, describeAnswer } from '@/components/student/ReviewList';
+import { SetRunner } from '@/components/student/SetRunner';
 import { Badge, Panel, SectionHead } from '@/components/ui/Panel';
 import { Button, LinkButton } from '@/components/ui/Button';
-import { Input, TextArea } from '@/components/ui/Field';
 import { Loading, TypePill, typeLabel } from '@/components/ui/Pills';
 import { useToast } from '@/components/ui/Toast';
 import { api, ApiError, cx } from '@/lib/api';
@@ -43,12 +49,8 @@ import {
 } from '@/lib/offlineQueue';
 import { useOutbox } from '@/lib/useOutbox';
 import { useServerClock, useSocket } from '@/lib/socket';
+import { fmtClock } from '@/lib/time';
 import type { ExamPublic, Grade, LeaderboardEntry, StudentQuestion } from '@shared/types';
-
-const fmtClock = (ms: number) => {
-  const total = Math.max(0, Math.ceil(ms / 1000));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-};
 
 export default function StudentExamPage() {
   const params = useParams<{ code: string }>();
@@ -68,16 +70,25 @@ export default function StudentExamPage() {
   const warned = useRef<string | null>(null);
   const lastQuestion = useRef<string | null>(null);
   const pendingHiddenReport = useRef(false);
+  /** The exam loaded at least once, so a later 404 means it was deleted, not mistyped. */
+  const hadExam = useRef(false);
 
   const load = useCallback(async () => {
     try {
       const res = await api<{ exam: ExamPublic }>(`/student/exams/by-code/${code}`);
+      hadExam.current = true;
       setExam(res.exam);
       setError(null);
     } catch (err) {
+      if (err instanceof ApiError && err.status === 404 && hadExam.current) {
+        // Deleted while this page was connecting, so the live event was missed.
+        push({ kind: 'info', title: 'Session removed', body: 'Your teacher removed this session, so you are back in your lobby.' });
+        router.replace('/student');
+        return;
+      }
       setError(err instanceof ApiError ? err.message : 'Could not open this exam');
     }
-  }, [code]);
+  }, [code, push, router]);
 
   useEffect(() => {
     void load();
@@ -114,7 +125,18 @@ export default function StudentExamPage() {
       setExam(payload);
     };
     const onPushed = (payload: { examId: string; active: NonNullable<ExamPublic['active']> }) => {
-      setExam((prev) => (prev ? { ...prev, status: 'live', active: payload.active } : prev));
+      // A live push always closes any open self-paced set on the server; mirror
+      // that at once so the page does not flash the set before `exam:state` lands.
+      setExam((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: 'live',
+              active: payload.active,
+              set: prev.set && !prev.set.closed ? { ...prev.set, closed: true, openQuestionId: null } : prev.set
+            }
+          : prev
+      );
       push({
         kind: 'info',
         title: 'New question pushed',
@@ -126,6 +148,11 @@ export default function StudentExamPage() {
       void load();
     };
     const onEnded = () => void load();
+    // Faculty deleted the session: nothing is left to show here.
+    const onRemoved = () => {
+      push({ kind: 'info', title: 'Session removed', body: 'Your teacher removed this session, so you are back in your lobby.' });
+      router.replace('/student');
+    };
     const onBoard = (payload: { entries: LeaderboardEntry[] }) => setBoard(payload.entries);
     // A short/long answer scored by the AI (or a teacher) after the question closed.
     const onAnswerGraded = (payload: { examId: string; questionId: string; grade: Grade; awarded: number }) => {
@@ -144,6 +171,7 @@ export default function StudentExamPage() {
     socket.on('question:pushed', onPushed);
     socket.on('question:locked', onLocked);
     socket.on('exam:ended', onEnded);
+    socket.on('exam:removed', onRemoved);
     socket.on('leaderboard:update', onBoard);
     socket.on('answer:graded', onAnswerGraded);
     return () => {
@@ -153,13 +181,35 @@ export default function StudentExamPage() {
       socket.off('question:pushed', onPushed);
       socket.off('question:locked', onLocked);
       socket.off('exam:ended', onEnded);
+      socket.off('exam:removed', onRemoved);
       socket.off('leaderboard:update', onBoard);
       socket.off('answer:graded', onAnswerGraded);
     };
-  }, [socket, code, load, push]);
+  }, [socket, code, load, push, router]);
 
   const active = exam?.active ?? null;
   const liveExam = exam?.status === 'live';
+
+  // Announce set changes once: a new batch of questions, or the set closing.
+  const lastSet = useRef<{ id: string; closed: boolean } | null>(null);
+  const setId = exam?.set?.id ?? null;
+  const setClosed = exam?.set?.closed ?? false;
+  const setSize = exam?.set?.items.length ?? 0;
+  useEffect(() => {
+    if (!setId) return;
+    const previous = lastSet.current;
+    lastSet.current = { id: setId, closed: setClosed };
+    if (!previous) return; // first load — nothing changed yet
+    if (previous.id !== setId && !setClosed) {
+      push({
+        kind: 'info',
+        title: `${setSize} question${setSize === 1 ? '' : 's'} pushed`,
+        body: 'Pick any question to start — each one has its own timer.'
+      });
+    } else if (previous.id === setId && !previous.closed && setClosed) {
+      push({ kind: 'info', title: 'The question set has closed', body: 'Your results for it are now visible.' });
+    }
+  }, [setId, setClosed, setSize, push]);
   const question: StudentQuestion | null = active?.question ?? null;
   const remaining = active ? Math.max(0, active.endsAt - now) : 0;
   const totalMs = active ? active.endsAt - active.pushedAt : 0;
@@ -337,28 +387,28 @@ export default function StudentExamPage() {
     const offline = !outbox.online;
     return (
       <StudentShell>
-        <Panel className="mx-auto max-w-md p-8 text-center">
+        <Panel className="mx-auto max-w-md p-8 text-center sm:p-10">
           <span
             className={cx(
-              'mx-auto grid h-12 w-12 place-items-center rounded-2xl',
-              offline ? 'bg-amber-400/10 text-amber-300' : 'bg-ember-500/10 text-ember-400'
+              'mx-auto grid h-14 w-14 place-items-center rounded-2xl ring-1 ring-inset',
+              offline ? 'bg-amber-400/10 text-amber-200 ring-amber-400/30' : 'bg-ember-500/10 text-ember-300 ring-ember-500/30'
             )}
           >
-            {offline ? <WifiOff className="h-5 w-5" /> : <Lock className="h-5 w-5" />}
+            {offline ? <WifiOff className="h-6 w-6" /> : <Lock className="h-6 w-6" />}
           </span>
-          <h1 className="mt-4 text-[16px] font-semibold text-white">
+          <h1 className="mt-5 font-display text-[24px] font-medium text-white">
             {offline ? 'No connection' : 'This exam is not accessible'}
           </h1>
-          <p className="mt-1.5 text-[12.5px] leading-relaxed text-white/45">
+          <p className="mt-2 text-[14px] leading-relaxed text-white/60">
             {offline
               ? 'This device is offline, so the exam room could not be opened. It will load by itself the moment you are back online.'
               : error}
           </p>
-          <div className="mt-5 flex flex-wrap justify-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => void load()}>
-              <RefreshCw className="h-3.5 w-3.5" /> Try again
+          <div className="mt-6 flex flex-wrap justify-center gap-2">
+            <Button variant="secondary" size="md" onClick={() => void load()}>
+              <RefreshCw className="h-4 w-4" /> Try again
             </Button>
-            <LinkButton href="/student" variant="lime" size="sm">
+            <LinkButton href="/student" variant="gold" size="md">
               Back to lobby
             </LinkButton>
           </div>
@@ -389,7 +439,7 @@ export default function StudentExamPage() {
       <StudentShell>
         <div className="mx-auto max-w-3xl space-y-4">
           <div className="flex items-center justify-between">
-            <Link href="/student" className="inline-flex items-center gap-1.5 text-[12px] text-white/40 hover:text-white">
+            <Link href="/student" className="inline-flex items-center gap-1.5 text-[13px] text-white/55 hover:text-white">
               <ArrowLeft className="h-3.5 w-3.5" /> Lobby
             </Link>
             <Badge tone="neutral">session ended</Badge>
@@ -397,73 +447,118 @@ export default function StudentExamPage() {
 
           <OfflineQueuePanel outbox={outbox} />
 
-          <Panel className="relative overflow-hidden p-7 text-center sm:p-9">
-            <div className="absolute -top-16 left-1/2 h-48 w-48 -translate-x-1/2 rounded-full bg-lime-400/15 blur-3xl" />
-            <span className="relative mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-lime-400/15 text-lime-300 ring-1 ring-inset ring-lime-400/30">
-              <Trophy className="h-6 w-6" />
+          <Panel className="gold-edge relative overflow-hidden p-7 text-center sm:p-10">
+            <div className="aura aura-gold left-1/2 top-[-6rem] h-64 w-64 -translate-x-1/2" />
+            <span className="relative mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-b from-gold-300/25 to-gold-500/10 text-gold-200 ring-1 ring-inset ring-gold-300/35 shadow-gold">
+              <Trophy className="h-7 w-7" />
             </span>
-            <p className="eyebrow relative mt-5">{exam.subject}</p>
-            <h1 className="relative mt-1 text-[1.6rem] font-semibold text-white">{exam.title}</h1>
-            <p className="relative mt-1 text-[12.5px] text-white/40">Session {exam.code} has closed.</p>
+            <p className="eyebrow relative mt-6">{exam.subject}</p>
+            <h1 className="relative mt-2 font-display text-[2rem] font-normal leading-tight text-white sm:text-[2.3rem]">
+              {exam.title}
+            </h1>
+            <p className="relative mt-2 text-[14px] text-white/60">Session {exam.code} has closed.</p>
 
-            <div className="relative mt-7 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            <div className="relative mt-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
               {[
                 { k: 'points', v: points },
                 { k: 'answered', v: `${mine.length}/${exam.totalQuestions}` },
                 { k: 'correct', v: correct },
                 { k: 'rank', v: me ? `#${me.rank}` : '—' }
               ].map((s) => (
-                <div key={s.k} className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-3.5">
-                  <p className="num text-[20px] font-semibold text-white">{s.v}</p>
-                  <p className="text-[9.5px] uppercase tracking-[0.14em] text-white/30">{s.k}</p>
+                <div key={s.k} className="rounded-2xl border border-white/[0.08] bg-ink-950/40 p-4">
+                  <p className="num font-display text-[28px] font-medium leading-none text-white">{s.v}</p>
+                  <p className="mt-2 text-[11px] uppercase tracking-[0.14em] text-white/55">{s.k}</p>
                 </div>
               ))}
             </div>
 
             {pending > 0 && (
-              <p className="relative mt-4 text-[11.5px] text-amber-300/80">
+              <p className="relative mt-5 text-[13px] text-amber-200/85">
                 {pending} written answer{pending > 1 ? 's are' : ' is'} still being reviewed — your score updates automatically.
               </p>
             )}
 
-            <div className="relative mt-6 flex flex-wrap justify-center gap-2">
-              <LinkButton href="/student" variant="lime" size="sm">
+            <div className="relative mt-7 flex flex-wrap justify-center gap-2">
+              <LinkButton href="/student" variant="gold" size="md">
                 Back to lobby
               </LinkButton>
-              <LinkButton href="/student" variant="ghost" size="sm">
-                <Sparkles className="h-3.5 w-3.5" /> Join another session
+              <LinkButton href="/student" variant="ghost" size="md">
+                <Sparkles className="h-4 w-4" /> Join another session
               </LinkButton>
             </div>
           </Panel>
 
-          <Panel className="p-5">
-            <SectionHead eyebrow="Cohort" title="Final leaderboard" />
-            <div className="mt-3">
-              <Leaderboard entries={board} highlightId={user?.id} max={10} />
-            </div>
-          </Panel>
+          {exam.review && (
+            <Panel className="p-5 sm:p-6">
+              <SectionHead
+                eyebrow="Review"
+                title="Your answers"
+                sub={
+                  exam.review.some((row) => row.correctAnswer !== undefined)
+                    ? 'Your teacher has shared the answer key — compare and learn from each question.'
+                    : 'Every question you met in this session, with your answer and result.'
+                }
+              />
+              <div className="mt-5">
+                <ReviewList items={exam.review} />
+              </div>
+            </Panel>
+          )}
+
+          {exam.showLeaderboard && (
+            <Panel className="p-5 sm:p-6">
+              <SectionHead eyebrow="Cohort" title="Final leaderboard" />
+              <div className="mt-4">
+                <Leaderboard entries={board} highlightId={user?.id} max={10} />
+              </div>
+            </Panel>
+          )}
         </div>
+      </StudentShell>
+    );
+  }
+
+  /* ── self-paced set ─────────────────────────────────────── */
+  if (exam.set && !exam.set.closed && user) {
+    return (
+      <StudentShell maxWidth="max-w-6xl">
+        <SetRunner
+          exam={exam}
+          set={exam.set}
+          board={board}
+          now={now}
+          synced={synced}
+          outbox={outbox}
+          userId={user.id}
+          onExam={setExam}
+          onBoard={setBoard}
+          reload={load}
+        />
       </StudentShell>
     );
   }
 
   /* ── waiting room ───────────────────────────────────────── */
   if (!active) {
+    const closedSet = exam.set && exam.set.closed ? exam.set : null;
     return (
       <StudentShell maxWidth="max-w-4xl">
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <Link href="/student" className="inline-flex items-center gap-1.5 text-[12px] text-white/40 hover:text-white">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Link
+              href="/student"
+              className="focus-ring inline-flex items-center gap-1.5 rounded-lg text-[13px] text-white/60 transition hover:text-white"
+            >
               <ArrowLeft className="h-3.5 w-3.5" /> Leave room
             </Link>
-            <span className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-[0.14em] text-white/35">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-[11.5px] uppercase tracking-[0.12em] text-white/60">
               {outbox.online ? (
                 <>
                   <Wifi className="h-3 w-3 text-mint-400" /> connected · {synced ? 'clock synced' : 'syncing'}
                 </>
               ) : (
                 <>
-                  <WifiOff className="h-3 w-3 text-ember-500" /> offline · answers saved locally
+                  <WifiOff className="h-3 w-3 text-ember-400" /> offline · answers saved locally
                 </>
               )}
             </span>
@@ -471,37 +566,105 @@ export default function StudentExamPage() {
 
           <OfflineQueuePanel outbox={outbox} />
 
-          <Panel className="relative overflow-hidden p-8 text-center sm:p-12">
+          <Panel className="gold-edge relative overflow-hidden p-8 text-center sm:p-14">
             <div className="absolute inset-0 dot-veil opacity-30" />
-            <div className="relative mx-auto grid h-16 w-16 animate-pulseRing place-items-center rounded-full bg-lime-400/10 text-lime-300 ring-1 ring-inset ring-lime-400/30">
-              <Hourglass className="h-7 w-7" />
+            <div className="relative mx-auto grid h-20 w-20 animate-pulseRing place-items-center rounded-full bg-gold-400/10 text-gold-200 ring-1 ring-inset ring-gold-300/35">
+              <Hourglass className="h-8 w-8" />
             </div>
-            <h1 className="relative mt-6 text-[1.5rem] font-semibold text-white sm:text-[1.8rem]">You are in the room</h1>
-            <p className="relative mx-auto mt-2 max-w-md text-[13px] leading-relaxed text-white/45">
+            <h1 className="relative mt-7 font-display text-[2rem] font-normal leading-tight text-white sm:text-[2.4rem]">
+              You are in the <span className="gold-text italic">room.</span>
+            </h1>
+            <p className="relative mx-auto mt-3 max-w-md text-[15px] leading-relaxed text-white/65">
               {exam.title} · {exam.totalQuestions} questions. Keep this tab open — the question appears here the moment
               your faculty pushes it.
             </p>
             {liveExam && (
-              <p className="relative mx-auto mt-3 max-w-md text-[11px] leading-relaxed text-amber-200/65">
-                For exam integrity, leaving this tab during the live session is reported to faculty.
+              <p className="relative mx-auto mt-4 flex w-fit max-w-full items-center gap-2 rounded-full border border-amber-400/20 bg-amber-400/[0.06] px-3.5 py-1.5 text-[12.5px] leading-snug text-amber-100/85">
+                <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+                Leaving this tab during the live session is reported to faculty.
               </p>
             )}
-            <div className="relative mx-auto mt-6 flex max-w-sm items-center justify-between rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3">
-              <span className="text-[11px] uppercase tracking-[0.14em] text-white/35">room code</span>
-              <span className="font-mono text-[15px] tracking-[0.3em] text-lime-300">{exam.code}</span>
+            <div className="relative mx-auto mt-7 flex max-w-sm items-center justify-between rounded-2xl border border-gold-200/15 bg-ink-950/50 px-5 py-3.5">
+              <span className="text-[12px] uppercase tracking-[0.14em] text-white/55">room code</span>
+              <span className="font-mono text-[17px] tracking-[0.3em] text-gold-200">{exam.code}</span>
             </div>
-            <div className="relative mt-4 flex items-center justify-center gap-2 text-[11.5px] text-white/30">
-              <Radio className="h-3.5 w-3.5 animate-pulse text-lime-400" />
-              listening for the first push…
+            <div className="relative mt-5 flex items-center justify-center gap-2 text-[13px] text-white/55">
+              <Radio className="h-3.5 w-3.5 animate-pulse text-gold-300" />
+              {closedSet ? 'listening for the next push…' : 'listening for the first push…'}
             </div>
           </Panel>
 
-          <Panel className="p-5">
-            <SectionHead eyebrow="Leaderboard" title="Cohort standings" sub="Ranked by accuracy, then speed." />
-            <div className="mt-3">
-              <Leaderboard entries={board} highlightId={user?.id} max={8} />
-            </div>
-          </Panel>
+          {closedSet && (
+            <Panel className="p-5 sm:p-6">
+              <SectionHead
+                eyebrow="Set results"
+                title="Your last question set"
+                sub="The set is closed — here is how each question went."
+                action={
+                  <Badge tone="royal">
+                    <Layers className="h-3 w-3" /> {closedSet.items.length} questions
+                  </Badge>
+                }
+              />
+              <ol className="mt-5 space-y-2">
+                {closedSet.items.map((item) => {
+                  const mine = exam.myAnswers[item.questionId];
+                  return (
+                    <li
+                      key={item.questionId}
+                      className="flex flex-wrap items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.02] p-3.5 sm:flex-nowrap"
+                    >
+                      <span className="num grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/[0.06] font-display text-[15px] text-white/80">
+                        {item.index}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="line-clamp-1 text-[14px] text-white/85">
+                          {item.prompt ?? `${typeLabel(item.type)} · ${item.points} pts`}
+                        </p>
+                        <p className="mt-0.5 truncate text-[12.5px] text-white/50">
+                          {mine
+                            ? `Your answer: ${describeAnswer(item.type, item.question?.options ?? [], mine.answer)}`
+                            : item.state === 'expired'
+                              ? 'Time ran out'
+                              : item.state === 'skipped'
+                                ? 'Skipped'
+                                : item.state === 'open'
+                                  ? 'The set closed before you submitted'
+                                  : 'Not attempted'}
+                        </p>
+                      </div>
+                      {mine ? (
+                        mine.grade === 'pending' ? (
+                          <Badge tone="neutral">
+                            <Hourglass className="h-3 w-3" /> in review
+                          </Badge>
+                        ) : mine.grade === 'correct' ? (
+                          <Badge tone="mint">
+                            <CheckCircle2 className="h-3 w-3" /> +{mine.awarded} pts
+                          </Badge>
+                        ) : (
+                          <Badge tone="ember">
+                            <XCircle className="h-3 w-3" /> incorrect
+                          </Badge>
+                        )
+                      ) : (
+                        <Badge tone="neutral">no answer</Badge>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            </Panel>
+          )}
+
+          {exam.showLeaderboard && (
+            <Panel className="p-5 sm:p-6">
+              <SectionHead eyebrow="Leaderboard" title="Cohort standings" sub="Ranked by accuracy, then speed." />
+              <div className="mt-4">
+                <Leaderboard entries={board} highlightId={user?.id} max={8} />
+              </div>
+            </Panel>
+          )}
         </div>
       </StudentShell>
     );
@@ -515,19 +678,26 @@ export default function StudentExamPage() {
       <div className="space-y-4">
         {/* status strip */}
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <Badge tone="lime" dot>live</Badge>
-            <span className="text-[12px] text-white/45">
-              {exam.title} · <span className="font-mono">{exam.code}</span>
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Badge tone="gold" dot>live</Badge>
+            <span className="truncate text-[13.5px] text-white/70">
+              {exam.title} · <span className="font-mono text-white/55">{exam.code}</span>
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <span className="num text-[11.5px] text-white/35">
+            <span className="num text-[13px] text-white/60">
               Question {active.index} of {active.total}
             </span>
-            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-white/[0.08]">
+            <div
+              className="h-1.5 w-28 overflow-hidden rounded-full bg-white/[0.08]"
+              role="progressbar"
+              aria-label="Paper progress"
+              aria-valuemin={0}
+              aria-valuemax={active.total}
+              aria-valuenow={active.index}
+            >
               <div
-                className="h-full rounded-full bg-gradient-to-r from-aurora-400 to-lime-400 transition-all duration-700"
+                className="h-full rounded-full bg-gradient-to-r from-royal-400 to-gold-300 transition-all duration-700"
                 style={{ width: `${progressPct}%` }}
               />
             </div>
@@ -536,12 +706,21 @@ export default function StudentExamPage() {
 
         <OfflineQueuePanel outbox={outbox} />
         {liveExam && (
-          <p className="text-center text-[11px] leading-relaxed text-amber-200/65">
+          <p className="mx-auto flex w-fit max-w-full items-center gap-2 rounded-full border border-amber-400/20 bg-amber-400/[0.06] px-3.5 py-1.5 text-[12.5px] leading-snug text-amber-100/85">
+            <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-300" />
             For exam integrity, leaving this tab during the live session is reported to faculty.
           </p>
         )}
+        {!expired && (
+          <MobileTimerBar
+            remaining={remaining}
+            total={totalMs}
+            urgent={urgent}
+            label={committed ? 'Answer in · question closes in' : `Question ${active.index} of ${active.total}`}
+          />
+        )}
 
-        <div className="grid gap-4 lg:grid-cols-[1.55fr_1fr]">
+        <div className="grid gap-5 lg:grid-cols-[1.55fr_1fr] [&>*]:min-w-0">
           {/* question column */}
           <div className="space-y-4">
             <Panel
@@ -551,132 +730,69 @@ export default function StudentExamPage() {
                 expired && 'opacity-95'
               )}
             >
-              {/* timer bar */}
-              <div className="relative h-1 w-full bg-white/[0.06]">
+              {/* timer bar — same colour logic as the countdown ring */}
+              <div className="relative h-1.5 w-full bg-white/[0.06]">
                 <div
                   className={cx(
                     'h-full transition-[width] duration-300 ease-linear',
-                    urgent ? 'bg-gradient-to-r from-ember-500 to-amber-400' : 'bg-gradient-to-r from-lime-400 to-mint-400'
+                    urgent
+                      ? 'bg-gradient-to-r from-ember-500 to-amber-400'
+                      : totalMs && remaining / totalMs > 0.4
+                        ? 'bg-gradient-to-r from-mint-500 to-mint-300'
+                        : 'bg-gradient-to-r from-amber-500 to-amber-300'
                   )}
                   style={{ width: `${totalMs ? Math.max(0, Math.min(100, (remaining / totalMs) * 100)) : 0}%` }}
                 />
               </div>
 
-              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/[0.06] px-5 py-3.5">
+              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/[0.06] px-5 py-4 sm:px-7">
                 <div className="flex flex-wrap items-center gap-2">
                   <TypePill type={question!.type} />
-                  <span className="text-[11px] text-white/35">{typeLabel(question!.type)}</span>
-                  <span className="num text-[11px] text-white/30">· {question!.points} pts</span>
+                  <span className="text-[13px] text-white/60">{typeLabel(question!.type)}</span>
+                  <span className="num text-[13px] text-white/50">· {question!.points} pts</span>
                 </div>
-                <div className="flex items-center gap-2">
+                {/* Phones read the time from the pinned bar above. */}
+                <div className="hidden items-center gap-2 lg:flex">
                   <span
                     className={cx(
-                      'num text-[15px] font-semibold',
-                      urgent ? 'text-ember-400' : 'text-white'
+                      'num text-[17px] font-semibold',
+                      urgent ? 'text-ember-300' : 'text-white'
                     )}
                   >
                     {expired ? '0:00' : fmtClock(remaining)}
                   </span>
-                  <Timer className={cx('h-3.5 w-3.5', urgent ? 'text-ember-400' : 'text-white/25')} />
-                  {synced && <span className="text-[9.5px] uppercase tracking-[0.14em] text-white/25">server</span>}
+                  <Timer className={cx('h-4 w-4', urgent ? 'text-ember-300' : 'text-white/45')} />
+                  {synced && <span className="text-[10.5px] uppercase tracking-[0.14em] text-white/45">server</span>}
                 </div>
               </div>
 
-              <div className="p-5 sm:p-6">
-                <div className="flex items-start gap-3">
-                  <span className="num mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-[11px] font-semibold text-white/50">
+              <div className="p-5 sm:p-7">
+                <div className="flex items-start gap-3.5">
+                  <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gold-400/[0.1] font-display text-[16px] font-medium text-gold-200 ring-1 ring-inset ring-gold-300/25">
                     {active.index}
                   </span>
-                  <h2 className="text-[16px] font-medium leading-relaxed text-white sm:text-[17px]">
+                  <h2 className="font-display text-[19px] font-normal leading-[1.5] text-white sm:text-[22px]">
                     {question!.prompt}
                   </h2>
                 </div>
 
                 {/* answer inputs */}
-                <div className="mt-5">
-                  {isObjective && (
-                    <div className="space-y-2.5">
-                      {question!.options.map((option, i) => {
-                        const selected = draft === String(i);
-                        return (
-                          <button
-                            key={`${question!.id}-opt-${i}`}
-                            type="button"
-                            disabled={committed || expired}
-                            onClick={() => setDraft(String(i))}
-                            className={cx(
-                              'group flex w-full items-center gap-3 rounded-2xl border px-4 py-3.5 text-left transition',
-                              selected
-                                ? 'border-aurora-400/60 bg-aurora-500/[0.12] shadow-[0_0_0_1px_rgba(158,130,255,0.25),0_10px_30px_-20px_rgba(124,92,255,0.9)]'
-                                : 'border-white/[0.08] bg-white/[0.02] hover:border-white/25 hover:bg-white/[0.04]',
-                              (committed || expired) && !selected && 'opacity-45'
-                            )}
-                          >
-                            <span
-                              className={cx(
-                                'grid h-8 w-8 shrink-0 place-items-center rounded-xl border text-[12px] font-semibold transition',
-                                selected
-                                  ? 'border-transparent bg-aurora-500 text-white'
-                                  : 'border-white/15 text-white/40 group-hover:border-white/30'
-                              )}
-                            >
-                              {selected ? <Check className="h-4 w-4" /> : String.fromCharCode(65 + i)}
-                            </span>
-                            <span className="text-[13.5px] leading-relaxed text-white/85">{option}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {question!.type === 'fill' && (
-                    <Input
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      disabled={committed || expired}
-                      placeholder="Type the missing word or value…"
-                      className="py-3.5 text-[15px]"
-                      autoFocus
-                    />
-                  )}
-
-                  {question!.type === 'short' && (
-                    <TextArea
-                      rows={3}
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      disabled={committed || expired}
-                      placeholder="Answer in one or two sentences…"
-                      className="text-[14px]"
-                      autoFocus
-                    />
-                  )}
-
-                  {question!.type === 'long' && (
-                    <div>
-                      <TextArea
-                        rows={9}
-                        value={draft}
-                        onChange={(e) => setDraft(e.target.value)}
-                        disabled={committed || expired}
-                        placeholder="Write your full answer. Show each step — this one is reviewed by your faculty."
-                        className="text-[14px] leading-relaxed"
-                        autoFocus
-                      />
-                      <div className="mt-1.5 flex justify-between text-[10.5px] text-white/25">
-                        <span>Reviewed manually after the session</span>
-                        <span className="num">{draft.trim().split(/\s+/).filter(Boolean).length} words</span>
-                      </div>
-                    </div>
-                  )}
+                <div className="mt-6">
+                  <AnswerInput
+                    question={question!}
+                    draft={draft}
+                    onDraft={setDraft}
+                    disabled={committed || expired}
+                    onSubmitShortcut={() => void submit()}
+                  />
+                  {!committed && !expired && <ShortcutHint type={question!.type} />}
                 </div>
-
                 {/* action */}
                 <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
                   {answered ? (
                     <div className="flex flex-1 items-center gap-2.5 rounded-xl border border-mint-400/25 bg-mint-500/[0.08] px-3.5 py-3">
                       <CircleCheck className="h-4 w-4 shrink-0 text-mint-300" />
-                      <p className="text-[12.5px] text-mint-100">
+                      <p className="text-[13.5px] text-mint-100">
                         Answer recorded. Result unlocks when the question closes.
                       </p>
                     </div>
@@ -687,27 +803,34 @@ export default function StudentExamPage() {
                       ) : (
                         <CloudUpload className="h-4 w-4 shrink-0 text-amber-300" />
                       )}
-                      <p className="text-[12.5px] text-amber-100">
+                      <p className="text-[13.5px] text-amber-100">
                         Saved on this device with {fmtClock(Math.max(0, queued.endsAt - queued.clientSubmittedAt))} on
                         the clock.
                         {outbox.syncing ? ' Delivering now…' : ' It will be submitted the moment you reconnect.'}
                       </p>
                     </div>
                   ) : expired ? (
-                    <div className="flex flex-1 items-center gap-2.5 rounded-xl border border-ember-500/25 bg-ember-500/[0.08] px-3.5 py-3">
-                      <Lock className="h-4 w-4 shrink-0 text-ember-400" />
-                      <p className="text-[12.5px] text-ember-400">
+                    <div className="flex flex-1 items-center gap-2.5 rounded-xl border border-ember-500/30 bg-ember-500/[0.08] px-4 py-3">
+                      <Lock className="h-4 w-4 shrink-0 text-ember-300" />
+                      <p className="text-[13.5px] text-ember-200">
                         Time is up for this question. Wait for the next push.
                       </p>
                     </div>
                   ) : (
                     <>
-                      <p className="text-[11px] text-white/30">
+                      <p className="max-w-sm text-[12.5px] leading-relaxed text-white/55">
                         {outbox.online
                           ? 'One submission per question · graded automatically for objective answers'
                           : 'Offline — your answer is saved on this device and sent automatically'}
                       </p>
-                      <Button variant="lime" size="lg" onClick={submit} loading={submitting} disabled={!canSubmit}>
+                      <Button
+                        variant="gold"
+                        size="lg"
+                        onClick={submit}
+                        loading={submitting}
+                        disabled={!canSubmit}
+                        className="w-full px-7 sm:w-auto"
+                      >
                         {outbox.online ? <Send className="h-4 w-4" /> : <CloudUpload className="h-4 w-4" />}
                         {outbox.online ? 'Submit answer' : 'Save answer'}
                       </Button>
@@ -720,8 +843,8 @@ export default function StudentExamPage() {
             {answered && myAnswer && (
               <Panel className="flex flex-wrap items-center justify-between gap-3 p-4">
                 <div className="min-w-0">
-                  <p className="text-[10.5px] uppercase tracking-[0.14em] text-white/30">your submission</p>
-                  <p className="mt-1 max-h-16 overflow-hidden text-[12.5px] leading-relaxed text-white/70">
+                  <p className="text-[11.5px] uppercase tracking-[0.14em] text-white/45">your submission</p>
+                  <p className="mt-1 max-h-16 overflow-hidden text-[13.5px] leading-relaxed text-white/80">
                     {isObjective ? `Option ${String.fromCharCode(65 + Number(myAnswer.answer))} — ${question!.options[Number(myAnswer.answer)] ?? ''}` : myAnswer.answer}
                   </p>
                 </div>
@@ -740,8 +863,8 @@ export default function StudentExamPage() {
             {!answered && queued && (
               <Panel className="flex flex-wrap items-center justify-between gap-3 p-4">
                 <div className="min-w-0">
-                  <p className="text-[10.5px] uppercase tracking-[0.14em] text-white/30">held on this device</p>
-                  <p className="mt-1 max-h-16 overflow-hidden text-[12.5px] leading-relaxed text-white/70">
+                  <p className="text-[11.5px] uppercase tracking-[0.14em] text-white/45">held on this device</p>
+                  <p className="mt-1 max-h-16 overflow-hidden text-[13.5px] leading-relaxed text-white/80">
                     {isObjective
                       ? `Option ${String.fromCharCode(65 + Number(queued.answer))} — ${question!.options[Number(queued.answer)] ?? ''}`
                       : queued.answer}
@@ -756,47 +879,51 @@ export default function StudentExamPage() {
 
           {/* side column */}
           <div className="space-y-4">
-            <Panel className="hidden p-5 lg:block">
+            <Panel className="hidden p-6 lg:block">
               <div className="flex flex-col items-center">
-                <RadialTimer remaining={expired ? 0 : remaining} total={totalMs} size={164} urgent={urgent} />
-                <p className="mt-2 flex items-center gap-1.5 text-[10.5px] uppercase tracking-[0.16em] text-white/30">
-                  <Zap className="h-3 w-3 text-lime-400" /> synced to server clock
+                <RadialTimer remaining={expired ? 0 : remaining} total={totalMs} size={172} urgent={urgent} />
+                <p className="mt-3 flex items-center gap-1.5 text-[11.5px] uppercase tracking-[0.16em] text-white/55">
+                  <Zap className="h-3 w-3 text-gold-300" /> synced to server clock
                 </p>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-2.5 text-center">
-                  <p className="num text-[15px] font-semibold text-white">{question!.points}</p>
-                  <p className="text-[9px] uppercase tracking-[0.12em] text-white/30">points</p>
+              <div className="mt-5 grid grid-cols-2 gap-2.5">
+                <div className="rounded-xl border border-white/[0.08] bg-ink-950/40 p-3 text-center">
+                  <p className="num font-display text-[20px] font-medium text-white">{question!.points}</p>
+                  <p className="mt-0.5 text-[10.5px] uppercase tracking-[0.12em] text-white/55">points</p>
                 </div>
-                <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-2.5 text-center">
-                  <p className="num text-[15px] font-semibold text-white">{Math.round(totalMs / 1000)}s</p>
-                  <p className="text-[9px] uppercase tracking-[0.12em] text-white/30">allowance</p>
+                <div className="rounded-xl border border-white/[0.08] bg-ink-950/40 p-3 text-center">
+                  <p className="num font-display text-[20px] font-medium text-white">{Math.round(totalMs / 1000)}s</p>
+                  <p className="mt-0.5 text-[10.5px] uppercase tracking-[0.12em] text-white/55">allowance</p>
                 </div>
               </div>
             </Panel>
 
-            <Panel className="p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="eyebrow">Live rank</p>
-                  <h3 className="mt-1 text-[14px] font-semibold text-white">Cohort standings</h3>
+            {exam.showLeaderboard && (
+              <Panel className="p-5 sm:p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="eyebrow">Live rank</p>
+                    <h3 className="mt-1.5 font-display text-[20px] font-medium text-white">Cohort standings</h3>
+                  </div>
+                  <span className="grid h-9 w-9 place-items-center rounded-xl bg-gold-400/[0.1] text-gold-200 ring-1 ring-inset ring-gold-300/25">
+                    <Trophy className="h-4 w-4" />
+                  </span>
                 </div>
-                <Trophy className="h-4 w-4 text-lime-300/70" />
-              </div>
-              <div className="mt-3">
-                <Leaderboard entries={board} highlightId={user?.id} max={8} compact />
-              </div>
-            </Panel>
+                <div className="mt-4">
+                  <Leaderboard entries={board} highlightId={user?.id} max={8} compact />
+                </div>
+              </Panel>
+            )}
 
             <Panel className="p-4">
               {outbox.online ? (
-                <p className="flex items-center gap-2 text-[11px] text-white/35">
-                  <Wifi className="h-3.5 w-3.5 text-mint-400" />
+                <p className="flex items-center gap-2.5 text-[13px] leading-relaxed text-white/60">
+                  <Wifi className="h-4 w-4 shrink-0 text-mint-400" />
                   Keep this tab in focus. Submissions close automatically when the timer ends.
                 </p>
               ) : (
-                <p className="flex items-start gap-2 text-[11px] text-amber-300/70">
-                  <WifiOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <p className="flex items-start gap-2.5 text-[13px] leading-relaxed text-amber-200/85">
+                  <WifiOff className="mt-0.5 h-4 w-4 shrink-0" />
                   You are disconnected. Answer anyway — it is saved on this device and delivered automatically when the
                   network returns.
                 </p>

@@ -18,10 +18,10 @@ const ToastContext = createContext<{
 } | null>(null);
 
 const palette: Record<Kind, { ring: string; icon: string; bar: string; glyph: typeof Info }> = {
-  info: { ring: 'ring-aurora-400/30', icon: 'text-aurora-200 bg-aurora-500/15', bar: 'bg-aurora-400/70', glyph: Info },
-  success: { ring: 'ring-mint-400/30', icon: 'text-mint-300 bg-mint-500/15', bar: 'bg-mint-400/70', glyph: Check },
-  error: { ring: 'ring-ember-500/35', icon: 'text-ember-400 bg-ember-500/15', bar: 'bg-ember-500/70', glyph: XCircle },
-  warn: { ring: 'ring-amber-400/30', icon: 'text-amber-300 bg-amber-400/15', bar: 'bg-amber-400/70', glyph: AlertTriangle }
+  info: { ring: 'ring-royal-400/25', icon: 'text-royal-100 bg-royal-500/[0.16] ring-royal-400/30', bar: 'bg-royal-400/80', glyph: Info },
+  success: { ring: 'ring-mint-400/25', icon: 'text-mint-300 bg-mint-500/[0.15] ring-mint-400/30', bar: 'bg-mint-400/80', glyph: Check },
+  error: { ring: 'ring-ember-500/30', icon: 'text-ember-300 bg-ember-500/[0.15] ring-ember-500/35', bar: 'bg-ember-500/80', glyph: XCircle },
+  warn: { ring: 'ring-amber-400/25', icon: 'text-amber-200 bg-amber-400/[0.15] ring-amber-400/30', bar: 'bg-amber-400/80', glyph: AlertTriangle }
 };
 
 /** Errors need reading time; a success confirmation does not. */
@@ -96,26 +96,26 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               onFocusCapture={() => hold(t.id)}
               onBlurCapture={() => release(t.id, t.kind)}
               className={cx(
-                'group pointer-events-auto relative animate-slideIn overflow-hidden rounded-2xl border border-white/10 bg-ink-850/95 p-3.5 pr-10 shadow-lift ring-1 backdrop-blur-xl',
+                'group pointer-events-auto relative animate-slideIn overflow-hidden rounded-2xl border border-white/10 bg-ink-850/95 p-4 pr-11 shadow-lift ring-1 backdrop-blur-xl',
                 tone.ring
               )}
             >
               <div className="flex gap-3">
                 <span
-                  className={cx('mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full', tone.icon)}
+                  className={cx('mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full ring-1 ring-inset', tone.icon)}
                   aria-hidden="true"
                 >
                   <Glyph className="h-3.5 w-3.5" />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-[13px] font-medium leading-snug text-white">{t.title}</p>
-                  {t.body && <p className="mt-0.5 text-[12px] leading-relaxed text-white/50">{t.body}</p>}
+                  <p className="text-[14px] font-semibold leading-snug text-white">{t.title}</p>
+                  {t.body && <p className="mt-1 text-[13px] leading-relaxed text-white/65">{t.body}</p>}
                 </div>
               </div>
 
               <button
                 onClick={() => dismiss(t.id)}
-                className="focus-ring absolute right-2 top-2 rounded-lg p-1.5 text-white/30 transition hover:bg-white/[0.08] hover:text-white"
+                className="focus-ring absolute right-2.5 top-2.5 rounded-lg p-1.5 text-white/45 transition hover:bg-white/[0.08] hover:text-white"
                 aria-label={`Dismiss: ${t.title}`}
               >
                 <X className="h-3.5 w-3.5" />

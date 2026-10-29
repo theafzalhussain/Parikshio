@@ -4,7 +4,29 @@ import type { Paper, PaperKind, Question, QuestionInput, QuestionType } from '..
 import { parseQuestionPaper } from './extract';
 import { MAX_UPLOAD_BYTES, extractTextFromFile, kindForFile } from './files';
 import { emitAllStaff } from './realtime';
-import { analytics, buildExamPublic, endExam, getLeaderboard, lockQuestion, manualGrade, pushQuestion, sanitizeQuestion, activeWindow } from './engine';
+import {
+  activeWindow,
+  analytics,
+  buildExamPublic,
+  closeSet,
+  deleteExam,
+  deliveredCount,
+  endExam,
+  getLeaderboard,
+  lockQuestion,
+  manualGrade,
+  openSetQuestion,
+  pushQuestion,
+  pushSet,
+  refreshStudentViews,
+  repushSetItem,
+  sanitizeQuestion,
+  setMonitor,
+  skipSetQuestion,
+  SET_MAX_ITEMS,
+  type DeletedExamSummary
+} from './engine';
+import { DEFAULT_SETTINGS, examSettings, inOpenSet, resultSealed, studentsSeeLeaderboard } from './sessionRules';
 import {
   aiGradingEnabled,
   gradingStatus,
@@ -32,11 +54,13 @@ import {
   issueSession,
   publicUser,
   requireRole,
+  userFromToken,
   verifyPassword,
   type AuthedRequest
 } from './auth';
 import { verifyFirebaseIdToken } from './firebase';
-import { sendPasswordResetEmail, emailEnabled } from './email';
+import { sendContactConfirmation, sendContactNotification, sendPasswordResetEmail, emailEnabled } from './email';
+import { contactReference, shouldSendContactCopy } from './contactRules';
 import { config, isProd } from './config';
 import {
   clientIp,
@@ -56,7 +80,14 @@ import {
   registerLimiter,
   resetPasswordLimiter
 } from './security';
-import { db, examCode, store, uid, type PasswordReset, type StoredUser } from './store';
+import { db, examCode, store, uid, type ContactMessage, type PasswordReset, type StoredUser } from './store';
+import {
+  CONTACT_LIMITS,
+  CONTACT_ROLES,
+  contactTopicLabel,
+  isContactRole,
+  isContactTopic
+} from '../shared/contact';
 import { DEMO_ACCOUNT_EMAILS, isDemoAccountEmail } from './demoAccounts';
 import { persist, unpersist, mongoReady } from './mongo';
 import { cache, cacheKeys } from './cache';
@@ -312,7 +343,9 @@ api.post('/auth/register', registerLimiter, (req, res) => {
     return res.status(403).json({ error: 'Faculty accounts must be provisioned by an administrator.' });
   }
   const role = 'student' as const;
-  const org = sanitiseName(req.body?.org, 'Axiom Institute');
+  // Blank stays blank: the old 'Axiom Institute' placeholder ended up shown as
+  // if it were the student's real institute.
+  const org = sanitiseName(req.body?.org, '');
   const ip = clientIp(req);
 
   if (!name) return res.status(400).json({ error: 'Full name is required' });
@@ -323,7 +356,7 @@ api.post('/auth/register', registerLimiter, (req, res) => {
   const weak = passwordProblem(password);
   if (weak) return res.status(400).json({ error: weak });
   if (db.userByEmail(email)) {
-    return res.status(409).json({ error: 'This email is already registered. Try signing in instead.' });
+    return res.status(409).json({ error: 'This email is already registered. Try logging in instead.' });
   }
 
   const user: StoredUser = {
@@ -391,13 +424,24 @@ api.post('/auth/google', googleLimiter, asyncRoute(async (req, res) => {
   let user = db.userByGoogleId(googleId) ?? db.userByEmail(email);
   let created = false;
 
+  if (!user && req.body?.mode === 'signin') {
+    // The faculty tab signs in only: a Google account with no Parikshio
+    // account must not quietly become a new student account.
+    recordAudit({ action: 'auth.google_failed', actorId: null, actorName: email, detail: 'no account (sign-in only)', ip });
+    return res.status(404).json({
+      error:
+        'No Parikshio account uses this Google address. Faculty accounts are created on request — use “Request access” below, or log in with email.',
+      code: 'auth/no-account'
+    });
+  }
+
   if (!user) {
     user = {
       id: uid('stu_'),
       name: sanitiseName(name, email.split('@')[0]),
       email,
       role: 'student',
-      org: sanitiseName(req.body?.org, 'Axiom Institute'),
+      org: sanitiseName(req.body?.org, ''),
       // No password — this account signs in with Google only until it sets one.
       passwordHash: '',
       createdAt: Date.now(),
@@ -619,7 +663,7 @@ api.get('/admin/overview', authenticate, requireRole('admin'), asyncRoute(async 
       ...exam,
       participation: participants,
       avgScore,
-      pushedCount: exam.current ? exam.questionIds.indexOf(exam.current.questionId) + 1 : 0
+      pushedCount: deliveredCount(exam)
     };
   });
 
@@ -811,6 +855,90 @@ api.delete('/questions/:id', authenticate, requireRole('admin'), (req: AuthedReq
   store.questions.splice(idx, 1);
   unpersist('questions', req.params.id);
   res.json({ ok: true });
+});
+
+const BULK_LIMIT = 500;
+
+/** A de-duplicated, bounded list of ids from a request body, or null when it is not one. */
+function idList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return [...new Set(value.map((id) => String(id)).filter(Boolean))].slice(0, BULK_LIMIT);
+}
+
+/**
+ * Deletes many questions at once. Questions that are attached to a session are
+ * left alone (deleting them would orphan its responses) and reported back, so
+ * one blocked row never cancels the rest.
+ */
+api.post('/questions/bulk-delete', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+  const ids = idList(req.body?.ids);
+  if (!ids || ids.length === 0) return res.status(400).json({ error: 'Select at least one question' });
+  const deleted: string[] = [];
+  const skipped: { id: string; reason: string }[] = [];
+  for (const id of ids) {
+    const idx = store.questions.findIndex((q) => q.id === id);
+    if (idx === -1) {
+      skipped.push({ id, reason: 'not found' });
+      continue;
+    }
+    if (store.exams.some((e) => e.questionIds.includes(id))) {
+      skipped.push({ id, reason: 'attached to a session' });
+      continue;
+    }
+    store.questions.splice(idx, 1);
+    unpersist('questions', id);
+    deleted.push(id);
+  }
+  recordAudit({
+    action: 'questions.bulk_delete',
+    actorId: req.user!.id,
+    actorName: req.user!.name,
+    detail: `${deleted.length} deleted, ${skipped.length} kept`,
+    ip: clientIp(req)
+  });
+  res.json({ ok: true, deleted, skipped });
+});
+
+/**
+ * Applies the same timer / points / difficulty / topic to many questions. Each
+ * merged question goes through the normal validator, so a bulk edit can never
+ * produce a question the single-question form would have refused.
+ */
+api.post('/questions/bulk-update', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+  const ids = idList(req.body?.ids);
+  if (!ids || ids.length === 0) return res.status(400).json({ error: 'Select at least one question' });
+  const raw = (req.body?.patch ?? {}) as Record<string, unknown>;
+  const patch: Partial<QuestionInput> = {};
+  if (raw.timerSeconds !== undefined && raw.timerSeconds !== '') patch.timerSeconds = Number(raw.timerSeconds);
+  if (raw.points !== undefined && raw.points !== '') patch.points = Number(raw.points);
+  if (raw.difficulty !== undefined && raw.difficulty !== '') {
+    if (!['easy', 'medium', 'hard'].includes(String(raw.difficulty))) {
+      return res.status(400).json({ error: 'Difficulty must be easy, medium or hard' });
+    }
+    patch.difficulty = String(raw.difficulty) as QuestionInput['difficulty'];
+  }
+  if (typeof raw.topic === 'string' && raw.topic.trim()) patch.topic = raw.topic.trim().slice(0, 80);
+  if (Object.keys(patch).length === 0) return res.status(400).json({ error: 'Choose at least one field to change' });
+
+  const updated: Question[] = [];
+  const failed: { id: string; error: string }[] = [];
+  for (const id of ids) {
+    const question = db.questionById(id);
+    if (!question) {
+      failed.push({ id, error: 'Question not found' });
+      continue;
+    }
+    const merged = { ...question, ...patch } as QuestionInput;
+    const error = validateQuestion(merged);
+    if (error) {
+      failed.push({ id, error });
+      continue;
+    }
+    Object.assign(question, questionFieldsFrom(merged));
+    persist('questions', asPersistable(question));
+    updated.push(question);
+  }
+  res.json({ ok: true, updated, failed });
 });
 
 
@@ -1073,12 +1201,63 @@ api.post('/papers/:id/exam', authenticate, requireRole('admin'), (req: AuthedReq
 // ── Admin: exams ──────────────────────────────────────────────
 api.get('/exams', authenticate, requireRole('admin'), (_req: AuthedRequest, res) => {
   res.json({
-    exams: db.exams().map((exam) => ({
-      ...exam,
-      participation: new Set(store.responses.filter((r) => r.examId === exam.id).map((r) => r.studentId)).size,
-      pushedCount: exam.current ? exam.questionIds.indexOf(exam.current.questionId) + 1 : 0
-    }))
+    exams: db.exams().map((exam) => {
+      const rows = store.responses.filter((r) => r.examId === exam.id);
+      const participation = new Set(rows.map((r) => r.studentId)).size;
+      return {
+        ...exam,
+        participation,
+        responseCount: rows.length,
+        settings: examSettings(exam),
+        // The list cards show this; it used to be missing, so every card read blank.
+        avgScore: participation ? Number((rows.reduce((a, b) => a + b.awarded, 0) / participation).toFixed(1)) : 0,
+        pushedCount: deliveredCount(exam)
+      };
+    })
   });
+});
+
+/**
+ * Deleting a session removes its answers, set timers and analytics for good;
+ * the questions stay in the bank. Students still in the room are sent back to
+ * their lobby. The list and the control room both confirm first.
+ */
+function removeExams(ids: string[], req: AuthedRequest) {
+  const deleted: DeletedExamSummary[] = [];
+  const missing: string[] = [];
+  for (const id of ids) {
+    const exam = db.examById(id);
+    if (!exam) {
+      missing.push(id);
+      continue;
+    }
+    deleted.push(deleteExam(exam));
+  }
+  if (deleted.length) {
+    recordAudit({
+      action: 'exams.delete',
+      actorId: req.user!.id,
+      actorName: req.user!.name,
+      detail: deleted.map((d) => `${d.code} (${d.responses} answers)`).join(', ').slice(0, 480),
+      ip: clientIp(req)
+    });
+  }
+  return { deleted, missing };
+}
+
+api.post('/exams/bulk-delete', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+  const ids = idList(req.body?.ids);
+  if (!ids || ids.length === 0) return res.status(400).json({ error: 'Select at least one session' });
+  if (ids.length > 200) return res.status(400).json({ error: 'Delete at most 200 sessions at a time' });
+  const result = removeExams(ids, req);
+  if (!result.deleted.length) return res.status(404).json({ error: 'Those sessions no longer exist', ...result });
+  res.json({ ok: true, ...result });
+});
+
+api.delete('/exams/:id', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+  const result = removeExams([req.params.id], req);
+  if (!result.deleted.length) return res.status(404).json({ error: 'Exam not found' });
+  res.json({ ok: true, deleted: result.deleted[0] });
 });
 
 api.post('/exams', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
@@ -1097,12 +1276,56 @@ api.post('/exams', authenticate, requireRole('admin'), (req: AuthedRequest, res)
     status: 'draft',
     questionIds: ids,
     createdAt: Date.now(),
-    current: null
+    current: null,
+    set: null,
+    settings: {
+      ...DEFAULT_SETTINGS,
+      setDefaults: { ...DEFAULT_SETTINGS.setDefaults }
+    }
   };
   store.exams.push(exam);
   persist('exams', asPersistable(exam));
   res.status(201).json({ exam });
 });
+
+/**
+ * Session settings and naming. Every field is optional; only what is sent
+ * changes, and booleans must really be booleans.
+ */
+api.patch('/exams/:id', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
+  const exam = db.examById(req.params.id);
+  if (!exam) return res.status(404).json({ error: 'Exam not found' });
+  const body = (req.body ?? {}) as Record<string, unknown>;
+
+  if (body.title !== undefined) {
+    const title = String(body.title).replace(/\s+/g, ' ').trim().slice(0, 120);
+    if (!title) return res.status(400).json({ error: 'Session title cannot be empty' });
+    exam.title = title;
+  }
+  if (body.subject !== undefined) {
+    exam.subject = String(body.subject).replace(/\s+/g, ' ').trim().slice(0, 120) || 'General';
+  }
+
+  const incoming = (body.settings ?? {}) as Record<string, unknown>;
+  const settings = examSettings(exam);
+  const flag = (value: unknown, current: boolean) => (typeof value === 'boolean' ? value : current);
+  const defaults = (incoming.setDefaults ?? {}) as Record<string, unknown>;
+  exam.settings = {
+    showLeaderboard: flag(incoming.showLeaderboard, settings.showLeaderboard),
+    revealAnswersAfterEnd: flag(incoming.revealAnswersAfterEnd, settings.revealAnswersAfterEnd),
+    setDefaults: {
+      revealPrompts: flag(defaults.revealPrompts, settings.setDefaults.revealPrompts),
+      autoAdvance: flag(defaults.autoAdvance, settings.setDefaults.autoAdvance),
+      allowSkip: flag(defaults.allowSkip, settings.setDefaults.allowSkip)
+    }
+  };
+
+  persist('exams', asPersistable(exam));
+  await cache.delPrefix(cacheKeys.examPrefix(exam.id));
+  // Students in the room pick up the new title and leaderboard visibility.
+  await refreshStudentViews(exam);
+  res.json({ ok: true, exam, settings: exam.settings });
+}));
 
 api.get('/exams/:id', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
   const exam = db.examById(req.params.id);
@@ -1119,8 +1342,11 @@ api.get('/exams/:id', authenticate, requireRole('admin'), (req: AuthedRequest, r
   );
   res.json({
     exam,
+    counts: { responses: all.length, students: new Set(all.map((r) => r.studentId)).size },
     questions: exam.questionIds.map((id) => db.questionById(id)).filter(Boolean),
     active: activeWindow(exam),
+    set: setMonitor(exam),
+    settings: examSettings(exam),
     leaderboard: getLeaderboard(exam.id),
     grading: gradingStatus(),
     responses: [...recent, ...outstanding].map((r) => ({
@@ -1157,17 +1383,132 @@ api.post('/exams/:id/questions', authenticate, requireRole('admin'), (req: Authe
   const exam = db.examById(req.params.id);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   if (exam.status === 'ended') return res.status(409).json({ error: 'This session has ended' });
-  const questionId = String(req.body?.questionId ?? '');
-  const question = db.questionById(questionId);
-  if (!question) return res.status(404).json({ error: 'Question not found' });
-  const already = exam.questionIds.includes(questionId);
-  if (!already) {
-    exam.questionIds.push(questionId);
+  // Accepts one id (`questionId`) or many (`questionIds`) — the bank's bulk
+  // "add to session" sends a list.
+  const ids = idList(req.body?.questionIds) ?? [String(req.body?.questionId ?? '')];
+  const missing = ids.filter((id) => !db.questionById(id));
+  if (ids.length === 0 || missing.length === ids.length) return res.status(404).json({ error: 'Question not found' });
+  let added = 0;
+  for (const id of ids) {
+    if (missing.includes(id) || exam.questionIds.includes(id)) continue;
+    exam.questionIds.push(id);
+    added++;
+  }
+  if (added) {
     persist('exams', exam as unknown as { id: string } & Record<string, unknown>);
     void cache.delPrefix(cacheKeys.examPrefix(exam.id));
   }
-  res.json({ ok: true, added: !already, exam });
+  res.json({ ok: true, added: ids.length === 1 ? added === 1 : added, exam });
 });
+
+/**
+ * Detaches questions from a session's paper. A question that already has
+ * answers in this session, is on screen right now, or is part of the open set
+ * stays — removing it would orphan responses or pull it from under students.
+ */
+api.post('/exams/:id/questions/remove', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
+  const exam = db.examById(req.params.id);
+  if (!exam) return res.status(404).json({ error: 'Exam not found' });
+  const ids = idList(req.body?.questionIds);
+  if (!ids || ids.length === 0) return res.status(400).json({ error: 'Select at least one question' });
+  const removed: string[] = [];
+  const kept: { id: string; reason: string }[] = [];
+  for (const id of ids) {
+    if (!exam.questionIds.includes(id)) continue;
+    if (db.responsesByExamQuestion(exam.id, id).length) {
+      kept.push({ id, reason: 'already answered in this session' });
+    } else if (exam.current?.questionId === id && !exam.current.locked) {
+      kept.push({ id, reason: 'live on screen right now' });
+    } else if (inOpenSet(exam, id)) {
+      kept.push({ id, reason: 'part of the open set' });
+    } else {
+      removed.push(id);
+    }
+  }
+  if (removed.length) {
+    exam.questionIds = exam.questionIds.filter((id) => !removed.includes(id));
+    persist('exams', asPersistable(exam));
+    await cache.delPrefix(cacheKeys.examPrefix(exam.id));
+  }
+  res.json({ ok: true, removed, kept, exam });
+}));
+
+/**
+ * Bulk push: several questions at once as a self-paced set. Each entry carries
+ * its own timer (the dialog sends the same number for all when the admin picks
+ * one shared timer). Students see the list and start each timer themselves.
+ */
+api.post('/exams/:id/push-set', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
+  const exam = db.examById(req.params.id);
+  if (!exam) return res.status(404).json({ error: 'Exam not found' });
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(body.items) || body.items.length === 0) {
+    return res.status(400).json({ error: 'Pick at least one question to push' });
+  }
+  if (body.items.length > SET_MAX_ITEMS) {
+    return res.status(400).json({ error: `A set can hold at most ${SET_MAX_ITEMS} questions` });
+  }
+  const entries: { questionId: string; timerSeconds?: number }[] = [];
+  for (const raw of body.items as Record<string, unknown>[]) {
+    const questionId = String(raw?.questionId ?? '');
+    if (!questionId) return res.status(400).json({ error: 'Every item needs a questionId' });
+    let timerSeconds: number | undefined;
+    if (raw.timerSeconds !== undefined && raw.timerSeconds !== null && raw.timerSeconds !== '') {
+      const seconds = intOrNull(raw.timerSeconds);
+      if (seconds === null || seconds < MIN_TIMER_SECONDS || seconds > MAX_TIMER_SECONDS) {
+        return res
+          .status(400)
+          .json({ error: `Timers must be whole numbers between ${MIN_TIMER_SECONDS} and ${MAX_TIMER_SECONDS} seconds` });
+      }
+      timerSeconds = seconds;
+    }
+    entries.push({ questionId, timerSeconds });
+  }
+  const defaults = examSettings(exam).setDefaults;
+  const pick = (value: unknown, fallback: boolean) => (typeof value === 'boolean' ? value : fallback);
+  const result = await pushSet(exam, entries, {
+    revealPrompts: pick(body.revealPrompts, defaults.revealPrompts),
+    autoAdvance: pick(body.autoAdvance, defaults.autoAdvance),
+    allowSkip: pick(body.allowSkip, defaults.allowSkip)
+  });
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  recordAudit({
+    action: 'exam.push_set',
+    actorId: req.user!.id,
+    actorName: req.user!.name,
+    detail: `${exam.code}: ${entries.length} questions`,
+    ip: clientIp(req)
+  });
+  res.json({ ok: true, exam, set: setMonitor(exam) });
+}));
+
+api.post('/exams/:id/set/close', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
+  const exam = db.examById(req.params.id);
+  if (!exam) return res.status(404).json({ error: 'Exam not found' });
+  const result = await closeSet(exam);
+  if (!result.ok) return res.status(409).json({ error: result.error });
+  res.json({ ok: true, set: setMonitor(exam) });
+}));
+
+api.post('/exams/:id/set/repush', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
+  const exam = db.examById(req.params.id);
+  if (!exam) return res.status(404).json({ error: 'Exam not found' });
+  const questionId = String(req.body?.questionId ?? '');
+  let timerSeconds: number | undefined;
+  const rawTimer = req.body?.timerSeconds;
+  if (rawTimer !== undefined && rawTimer !== null && rawTimer !== '') {
+    const seconds = intOrNull(rawTimer);
+    if (seconds === null || seconds < MIN_TIMER_SECONDS || seconds > MAX_TIMER_SECONDS) {
+      return res
+        .status(400)
+        .json({ error: `Timer must be a whole number between ${MIN_TIMER_SECONDS} and ${MAX_TIMER_SECONDS} seconds` });
+    }
+    timerSeconds = seconds;
+  }
+  const result = await repushSetItem(exam, questionId, timerSeconds);
+  if (!result.ok) return res.status(409).json({ error: result.error });
+  res.json({ ok: true, reopened: result.reopened, set: setMonitor(exam) });
+}));
 
 api.post('/exams/:id/lock', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
   const exam = db.examById(req.params.id);
@@ -1371,7 +1712,9 @@ api.get('/student/exams', authenticate, requireRole('student'), (_req: AuthedReq
       status: e.status,
       totalQuestions: e.questionIds.length,
       adminName: e.adminName,
-      endedAt: e.endedAt
+      endedAt: e.endedAt,
+      // Lets the lobby say "4 questions — answer in any order" before joining.
+      openSet: e.set && !e.set.closed ? { size: e.set.items.length } : null
     }));
   res.json({ exams });
 });
@@ -1387,12 +1730,33 @@ api.post('/student/join', authenticate, requireRole('student'), (req: AuthedRequ
 api.get('/student/exams/:id', authenticate, requireRole('student'), (req: AuthedRequest, res) => {
   const exam = db.examById(req.params.id);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
-  res.json({ exam: buildExamPublic(exam, req.user!.id), leaderboard: getLeaderboard(exam.id) });
+  res.json({
+    exam: buildExamPublic(exam, req.user!.id),
+    leaderboard: studentsSeeLeaderboard(exam) ? getLeaderboard(exam.id) : []
+  });
 });
 
 api.get('/student/exams/by-code/:code', authenticate, requireRole('student'), (req: AuthedRequest, res) => {
   const exam = db.examByCode(req.params.code);
   if (!exam) return res.status(404).json({ error: 'No exam found with that code' });
+  res.json({ exam: buildExamPublic(exam, req.user!.id) });
+});
+
+/** Starts this student's own timer on one question of the open set. */
+api.post('/student/sets/open', authenticate, requireRole('student'), (req: AuthedRequest, res) => {
+  const exam = db.examById(String(req.body?.examId ?? ''));
+  if (!exam) return res.status(404).json({ error: 'Exam not found', code: 'exam-missing' });
+  const result = openSetQuestion(exam, req.user!, String(req.body?.questionId ?? ''));
+  if (!result.ok) return res.status(result.code).json({ error: result.error, code: result.reason });
+  res.json({ exam: buildExamPublic(exam, req.user!.id) });
+});
+
+/** Gives up on the question that is open (only when the set allows skipping). */
+api.post('/student/sets/skip', authenticate, requireRole('student'), (req: AuthedRequest, res) => {
+  const exam = db.examById(String(req.body?.examId ?? ''));
+  if (!exam) return res.status(404).json({ error: 'Exam not found', code: 'exam-missing' });
+  const result = skipSetQuestion(exam, req.user!, String(req.body?.questionId ?? ''));
+  if (!result.ok) return res.status(result.code).json({ error: result.error, code: result.reason });
   res.json({ exam: buildExamPublic(exam, req.user!.id) });
 });
 
@@ -1412,16 +1776,17 @@ api.post('/student/answers', authenticate, requireRole('student'), asyncRoute(as
   // AI evaluation internals (feedback that may paraphrase the model answer) are
   // staff-only; the student gets a receipt, not the marking.
   const { ai: _ai, gradedBy: _gradedBy, gradedAt: _gradedAt, ...receipt } = result.response;
-  // Results stay sealed only while the answer's own question is still open — a
-  // replayed answer for a question that has since closed may show its score.
-  const sealed = exam.current?.questionId === result.response.questionId && !exam.current.locked;
+  // Results stay sealed while classmates can still answer the same question —
+  // a live push until it locks, a set until it closes. A replayed answer for a
+  // question that has since closed may show its score.
+  const sealed = resultSealed(exam, result.response.questionId);
   res.json({
     response: {
       ...receipt,
       grade: sealed ? 'pending' : result.response.grade,
       awarded: sealed ? 0 : result.response.awarded
     },
-    leaderboard: getLeaderboard(exam.id),
+    leaderboard: studentsSeeLeaderboard(exam) ? getLeaderboard(exam.id) : [],
     exam: buildExamPublic(exam, req.user!.id)
   });
 }));
@@ -1436,27 +1801,221 @@ api.get('/student/history', authenticate, requireRole('student'), (req: AuthedRe
   });
   const history = [...grouped.entries()].map(([examId, list]) => {
     const exam = db.examById(examId);
-    const points = list.reduce((a, b) => a + b.awarded, 0);
+    // A grade that is still sealed for the class must not leak through the lobby.
+    const visible = list.filter((r) => !exam || !resultSealed(exam, r.questionId));
+    const points = visible.reduce((a, b) => a + b.awarded, 0);
     const maxPoints = list.reduce((a, b) => a + (db.questionById(b.questionId)?.points ?? 0), 0);
-    const board = getLeaderboard(examId);
+    const showRank = !exam || studentsSeeLeaderboard(exam);
+    const board = showRank ? getLeaderboard(examId) : [];
     const me = board.find((b) => b.studentId === req.user!.id);
     return {
       examId,
       title: exam?.title ?? 'Exam',
       subject: exam?.subject ?? '',
       status: exam?.status ?? 'ended',
+      code: exam?.code ?? '',
       answered: list.length,
-      correct: list.filter((r) => r.grade === 'correct').length,
+      correct: visible.filter((r) => r.grade === 'correct').length,
       points,
       maxPoints,
       rank: me?.rank ?? null,
       cohort: board.length,
       avgLatencyMs: list.length ? Math.round(list.reduce((a, b) => a + b.latencyMs, 0) / list.length) : 0,
-      lastAt: Math.max(...list.map((r) => r.submittedAt))
+      lastAt: list.reduce((acc, r) => Math.max(acc, r.submittedAt), 0)
     };
   });
   res.json({ history: history.sort((a, b) => b.lastAt - a.lastAt) });
 });
+
+/**
+ * Personal strengths: accuracy by question format and by topic, plus the
+ * longest run of correct answers. Sealed grades are left out until they open.
+ */
+api.get('/student/insights', authenticate, requireRole('student'), (req: AuthedRequest, res) => {
+  const rows = db
+    .responsesByStudent(req.user!.id)
+    .filter((r) => {
+      const exam = db.examById(r.examId);
+      return !exam || !resultSealed(exam, r.questionId);
+    })
+    .sort((a, b) => a.submittedAt - b.submittedAt);
+  const graded = rows.filter((r) => r.grade !== 'pending');
+  const summarise = (list: typeof graded) => {
+    const correct = list.filter((r) => r.grade === 'correct').length;
+    return { answered: list.length, correct, accuracy: list.length ? Math.round((correct / list.length) * 100) : 0 };
+  };
+
+  const byType = QUESTION_TYPES.map((type) => ({
+    type,
+    ...summarise(graded.filter((r) => db.questionById(r.questionId)?.type === type))
+  })).filter((row) => row.answered > 0);
+
+  const topics = new Map<string, typeof graded>();
+  graded.forEach((r) => {
+    const topic = db.questionById(r.questionId)?.topic || 'General';
+    topics.set(topic, [...(topics.get(topic) ?? []), r]);
+  });
+  const byTopic = [...topics.entries()]
+    .map(([topic, list]) => ({ topic, ...summarise(list) }))
+    .sort((a, b) => b.answered - a.answered)
+    .slice(0, 8);
+
+  let bestStreak = 0;
+  let run = 0;
+  graded.forEach((r) => {
+    run = r.grade === 'correct' ? run + 1 : 0;
+    bestStreak = Math.max(bestStreak, run);
+  });
+
+  res.json({
+    insights: {
+      totals: {
+        ...summarise(graded),
+        pending: rows.length - graded.length,
+        points: graded.reduce((a, b) => a + b.awarded, 0),
+        avgLatencyMs: rows.length ? Math.round(rows.reduce((a, b) => a + b.latencyMs, 0) / rows.length) : 0
+      },
+      byType,
+      byTopic,
+      bestStreak
+    }
+  });
+});
+
+// ── Contact / feedback ────────────────────────────────────────
+/**
+ * Generous enough for a classroom sharing one public IP, tight enough that the
+ * form cannot be used to flood the team inbox.
+ */
+const contactIpLimiter = createRateLimiter({
+  name: 'contact:ip',
+  windowMs: 15 * 60_000,
+  max: 10,
+  message: 'Several messages have been sent from this network just now. Please wait a few minutes and try again.'
+});
+const contactEmailLimiter = createRateLimiter({
+  name: 'contact:email',
+  windowMs: 15 * 60_000,
+  max: 3,
+  keyFor: (req) => sanitiseEmail((req.body as { email?: unknown } | undefined)?.email) || null,
+  message: 'You have sent a few messages already. Please wait a few minutes before sending another.'
+});
+const CONTACT_KEEP_IN_MEMORY = 500;
+
+api.post('/contact', contactIpLimiter, contactEmailLimiter, asyncRoute(async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const ip = clientIp(req);
+
+  // Honeypot: a field people never see. Bots fill it; they get a success
+  // response and nothing is stored or sent.
+  if (typeof body.website === 'string' && body.website.trim()) {
+    recordAudit({ action: 'contact.spam_dropped', actorId: null, actorName: 'honeypot', detail: 'hidden field filled', ip });
+    return res.status(201).json({ ok: true });
+  }
+
+  const name = sanitiseName(body.name, '').slice(0, CONTACT_LIMITS.name);
+  const email = sanitiseEmail(body.email);
+  const org = sanitiseName(body.org, '').slice(0, CONTACT_LIMITS.org);
+  const message = String(body.message ?? '')
+    .replace(/\r\n?/g, '\n')
+    // Strip control characters other than newlines and tabs.
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .trim();
+
+  if (!isContactTopic(body.topic)) return res.status(400).json({ error: 'Choose what your message is about' });
+  const topic = body.topic;
+  const role = isContactRole(body.role) ? body.role : 'other';
+  if (name.length < 2) return res.status(400).json({ error: 'Please tell us your name' });
+  if (!EMAIL_RE.test(email) || email.length > CONTACT_LIMITS.email) {
+    return res.status(400).json({ error: 'Enter a valid email address so we can reply' });
+  }
+  if (message.length < CONTACT_LIMITS.messageMin) {
+    return res.status(400).json({ error: `Please write at least ${CONTACT_LIMITS.messageMin} characters` });
+  }
+  if (message.length > CONTACT_LIMITS.messageMax) {
+    return res.status(400).json({ error: `Please keep your message under ${CONTACT_LIMITS.messageMax} characters` });
+  }
+  const ratingValue = intOrNull(body.rating);
+  const rating = topic === 'feedback' && ratingValue !== null && ratingValue >= 1 && ratingValue <= 5 ? ratingValue : null;
+
+  // Signing in is optional; when a valid session is present it is noted so the
+  // team can tell which account wrote in.
+  const header = req.headers.authorization ?? '';
+  const sender = header.startsWith('Bearer ') ? userFromToken(header.slice(7)) : null;
+
+  const entry: ContactMessage = {
+    id: uid('msg_'),
+    topic,
+    role,
+    name,
+    email,
+    org,
+    message,
+    rating,
+    userId: sender?.id ?? null,
+    userRole: sender?.role ?? null,
+    createdAt: Date.now(),
+    delivered: false,
+    confirmationSent: false
+  };
+  const reference = contactReference(entry.id);
+  const roleLabel = CONTACT_ROLES.find((r) => r.key === role)?.label ?? 'Other';
+  const sendCopy = shouldSendContactCopy(store.contactMessages, email, entry.createdAt);
+
+  const [team, copy] = await Promise.all([
+    sendContactNotification({
+      to: config.contact.inbox,
+      reference,
+      topic,
+      topicLabel: contactTopicLabel(topic),
+      roleLabel,
+      name,
+      email,
+      org,
+      message,
+      rating,
+      signedInAs: sender ? `${sender.name} (${sender.role === 'admin' ? 'faculty' : 'student'}, ${sender.email})` : null,
+      receivedAt: entry.createdAt
+    }),
+    sendCopy
+      ? sendContactConfirmation({
+          to: email,
+          replyTo: config.contact.inbox,
+          reference,
+          topic,
+          topicLabel: contactTopicLabel(topic),
+          roleLabel,
+          name,
+          org,
+          message,
+          rating,
+          receivedAt: entry.createdAt
+        })
+      : Promise.resolve({ ok: false, error: 'daily confirmation limit for this address' })
+  ]);
+  entry.delivered = team.ok;
+  entry.confirmationSent = copy.ok;
+  if (emailEnabled()) {
+    // Stored either way; the log lines make a broken mail setup diagnosable.
+    if (!team.ok) console.warn(`[contact] team notification failed: ${team.error}`);
+    if (!copy.ok && sendCopy) console.warn(`[contact] confirmation to sender failed: ${copy.error}`);
+  }
+
+  store.contactMessages.push(entry);
+  if (store.contactMessages.length > CONTACT_KEEP_IN_MEMORY) {
+    store.contactMessages.splice(0, store.contactMessages.length - CONTACT_KEEP_IN_MEMORY);
+  }
+  persist('contactMessages', asPersistable(entry));
+  recordAudit({
+    action: 'contact.received',
+    actorId: sender?.id ?? null,
+    actorName: name,
+    detail: `topic=${topic} delivered=${team.ok} confirmation=${copy.ok}`,
+    ip
+  });
+
+  res.status(201).json({ ok: true, id: entry.id, reference, confirmationSent: copy.ok });
+}));
 
 // ── Infra / health ────────────────────────────────────────────
 api.get('/health', (_req, res) => {

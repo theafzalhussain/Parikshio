@@ -38,7 +38,7 @@ export default function ForgotPasswordPage() {
       heading={
         <>
           Locked out? Get back in{' '}
-          <span className="font-display italic text-lime-300">safely.</span>
+          <span className="font-display italic gold-text">safely.</span>
         </>
       }
       subheading="We email a single-use link that expires in 30 minutes. Using it signs out every other device, so a stolen session cannot survive a password change."
@@ -58,9 +58,9 @@ export default function ForgotPasswordPage() {
                 <MailCheck className="h-4 w-4" />
               </span>
               <div className="min-w-0">
-                <p className="text-[13px] font-medium text-white/85">Reset link requested</p>
-                <p className="mt-1 break-words text-[12px] leading-relaxed text-white/45">
-                  Sent to <span className="font-medium text-white/70">{email.trim()}</span> if that address has an
+                <p className="text-[14px] font-medium text-white/85">Reset link requested</p>
+                <p className="mt-1 break-words text-[13px] leading-relaxed text-white/60">
+                  Sent to <span className="font-medium text-white/80">{email.trim()}</span> if that address has an
                   account. The link is valid for 30 minutes.
                 </p>
               </div>
@@ -73,15 +73,15 @@ export default function ForgotPasswordPage() {
           */}
           {sent.devLink && (
             <div className="mt-4 rounded-2xl border border-amber-400/25 bg-amber-400/[0.06] p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">
+              <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-amber-300">
                 development only
               </p>
-              <p className="mt-1.5 text-[12px] leading-relaxed text-white/45">
+              <p className="mt-1.5 text-[13px] leading-relaxed text-white/60">
                 Email delivery isn&apos;t wired up yet, so here is the link directly:
               </p>
               <Link
                 href={sent.devLink}
-                className="focus-ring mt-2.5 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2.5 text-[12.5px] font-medium text-amber-200 transition hover:bg-amber-400/20"
+                className="focus-ring mt-2.5 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2.5 text-[13.5px] font-medium text-amber-200 transition hover:bg-amber-400/20"
               >
                 Open reset link
                 <ArrowLeft className="h-3.5 w-3.5 rotate-180" />
@@ -96,13 +96,13 @@ export default function ForgotPasswordPage() {
                 setSent(null);
                 setError(null);
               }}
-              className="focus-ring rounded text-[12px] text-white/40 transition hover:text-white"
+              className="focus-ring rounded text-[13px] text-white/55 transition hover:text-white"
             >
               Use a different email
             </button>
             <LinkButton href="/login" variant="secondary" size="sm">
               <ArrowLeft className="h-3.5 w-3.5" />
-              Back to sign in
+              Back to log in
             </LinkButton>
           </div>
         </>
@@ -117,7 +117,7 @@ export default function ForgotPasswordPage() {
             <div>
               <Label htmlFor="forgot-email">Email address</Label>
               <div className="relative">
-                <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/25" />
+                <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
                 <Input
                   id="forgot-email"
                   type="email"
@@ -134,16 +134,16 @@ export default function ForgotPasswordPage() {
 
             {error && <AuthAlert>{error}</AuthAlert>}
 
-            <Button type="submit" size="lg" variant="lime" className="w-full" loading={busy}>
+            <Button type="submit" size="lg" variant="gold" className="w-full" loading={busy}>
               Send reset link
               {!busy && <Send className="h-4 w-4" />}
             </Button>
           </form>
 
-          <p className="mt-5 text-center text-[12px] text-white/40">
+          <p className="mt-5 text-center text-[13px] text-white/55">
             Remembered it?{' '}
-            <Link href="/login" className="focus-ring rounded font-medium text-lime-300 transition hover:text-lime-200">
-              Back to sign in
+            <Link href="/login" className="focus-ring rounded font-medium text-gold-300 transition hover:text-gold-200">
+              Back to log in
             </Link>
           </p>
         </>

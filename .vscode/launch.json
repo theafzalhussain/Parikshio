@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Axiom Live · dev (Next.js + Express + Socket.io)",
+      "name": "Parikshio · dev (Next.js + Express + Socket.io)",
       "type": "node",
       "request": "launch",
       "runtimeExecutable": "npx",
@@ -11,7 +11,7 @@
       "env": { "NODE_ENV": "development", "PORT": "3000" },
       "console": "integratedTerminal",
       "serverReadyAction": {
-        "pattern": "Axiom Live.*http://localhost:([0-9]+)",
+        "pattern": "Parikshio.*http://localhost:([0-9]+)",
         "uriFormat": "http://localhost:%s",
         "action": "openExternally"
       },
@@ -19,7 +19,7 @@
       "restart": true
     },
     {
-      "name": "Axiom Live · dev (watch mode)",
+      "name": "Parikshio · dev (watch mode)",
       "type": "node",
       "request": "launch",
       "runtimeExecutable": "npm",
@@ -29,7 +29,7 @@
       "skipFiles": ["<node_internals>/**", "**/node_modules/**"]
     },
     {
-      "name": "Axiom Live · production build & run",
+      "name": "Parikshio · production build & run",
       "type": "node",
       "request": "launch",
       "runtimeExecutable": "npm",

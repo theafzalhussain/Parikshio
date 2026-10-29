@@ -78,7 +78,7 @@ await page.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
 console.log('\n2) wrong credentials');
 await page.getByLabel(/email/i).first().fill('nobody@axiom.edu');
 await page.locator('input[type="password"]').first().fill('definitely-wrong');
-await page.getByRole('button', { name: /^sign in/i }).first().click();
+await page.getByRole('button', { name: /^log in/i }).first().click();
 await page.waitForTimeout(1200);
 const errText = await page.locator('[role="alert"]').first().innerText().catch(() => '');
 ok('inline error shown', /incorrect|invalid|wrong/i.test(errText), errText.slice(0, 70));
@@ -89,7 +89,7 @@ console.log('\n3) real admin login');
 await page.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
 await page.getByLabel(/email/i).first().fill('admin@axiom.edu');
 await page.locator('input[type="password"]').first().fill('admin123');
-await page.getByRole('button', { name: /^sign in/i }).first().click();
+await page.getByRole('button', { name: /^log in/i }).first().click();
 await page.waitForURL(/\/admin/, { timeout: 20000 }).catch(() => {});
 ok('redirected to /admin', page.url().includes('/admin'), page.url());
 const storedToken = await page.evaluate(() => window.localStorage.getItem('axiom.token'));
@@ -113,7 +113,7 @@ ok('bounced to /login', new URL(page.url()).pathname === '/login', page.url());
 const notice = await page.locator('[role="alert"], [role="status"]').allInnerTexts().catch(() => []);
 ok(
   'session notice explains why',
-  notice.some((t) => /session|sign in again|invalid/i.test(t)),
+  notice.some((t) => /session|log in again|invalid/i.test(t)),
   notice.join(' | ').slice(0, 80)
 );
 
