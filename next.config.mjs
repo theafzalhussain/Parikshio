@@ -15,7 +15,7 @@
  * server to clash with there, so `USE_DEFAULT_DIST_DIR=1` keeps the default
  * `.next` and lets the host's output detection work.
  */
-const useDefaultDistDir = process.env.USE_DEFAULT_DIST_DIR === '1';
+const useDefaultDistDir = process.env.USE_DEFAULT_DIST_DIR === '1' || process.env.VERCEL === '1';
 const distDir = !useDefaultDistDir && process.env.NODE_ENV === 'production' ? '.next-prod' : '.next';
 
 /** @type {import('next').NextConfig} */

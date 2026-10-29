@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: axiom-api
+    runtime: node
+    region: singapore
+    plan: free
+    branch: main
+    autoDeploy: true
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: GOOGLE_CLASSROOM_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLASSROOM_CLIENT_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_SENDER_EMAIL
+        sync: false
+      - key: BREVO_SENDER_NAME
+        value: Parikshio
+      - key: SESSION_TTL
+        value: 12h

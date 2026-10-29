@@ -214,7 +214,26 @@ Google's OAuth consent configuration and Classroom access policies determine whi
 
 ### Deploy checklist (Render API + Vercel UI)
 
-Both hosts deploy automatically on every push to `main`.
+The repository includes [`render.yaml`](./render.yaml) and [`vercel.json`](./vercel.json).
+After the one-time provider setup below, both hosts deploy automatically on every push
+to `main`; no deploy command or manual upload is needed.
+
+#### One-time provider setup
+
+1. **Render:** create a Blueprint from this repository and select `render.yaml`.
+   Keep the service as a **Web Service**, complete the `sync: false` environment
+   values in the Render dashboard, and enable **Auto-Deploy: Yes** for the `main`
+   branch. Render will use the health check at `/healthz`.
+2. **Vercel:** import the same GitHub repository as a Next.js project, set the
+   root directory to this project directory, and select the `main` production
+   branch. Vercel's Git integration then creates a production deployment for
+   every push to `main` and preview deployments for pull requests/other branches.
+3. Add `NEXT_PUBLIC_API_URL` and the public Firebase values to the Vercel
+   project. Add the Render URL to `ALLOWED_ORIGINS` on Render. Include both the
+   Vercel production URL and any preview URL that needs to call the API.
+4. On Vercel, redeploy once after saving environment variables because
+   `NEXT_PUBLIC_*` values are embedded at build time. Do not copy server secrets
+   to Vercel.
 
 **Do not set `NODE_ENV` as a Render environment variable.** npm omits `devDependencies` whenever `NODE_ENV=production` is already in the environment, which strips `tailwindcss`, `autoprefixer` and `typescript` and makes `next build` fail in seconds. The `start` script sets production itself (`cross-env NODE_ENV=production`), and `next build` sets it internally, so the build still writes to `.next-prod` and the server still runs in production mode. (Alternatively, keep the variable and change the build command to `npm ci --include=dev && npm run build`.)
 
@@ -229,7 +248,7 @@ Both hosts deploy automatically on every push to `main`.
 
 | Vercel — frontend only | Value |
 | --- | --- |
-| `USE_DEFAULT_DIST_DIR` | `1`, so the build lands in `.next` where Vercel looks for it |
+| `USE_DEFAULT_DIST_DIR` | optional; the config automatically uses `.next` when it detects Vercel |
 | `NEXT_PUBLIC_API_URL` | the Render service URL |
 | `NEXT_PUBLIC_FIREBASE_*` | the four public Firebase web-app values |
 
