@@ -4,7 +4,12 @@
 
 :root {
   color-scheme: dark;
-  --ink: #05060a;
+  --ink: #0c0b0a;
+  --surface: #141210;
+  --surface-raised: #1b1815;
+  --line: rgba(226, 199, 145, 0.16);
+  --champagne: #e4c98f;
+  --champagne-soft: #f2dfb1;
   /* Shared easing so every transition in the app decelerates the same way. */
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -20,8 +25,11 @@ html {
 }
 
 body {
-  background: var(--ink);
-  color: #eceef7;
+  background:
+    radial-gradient(circle at 12% -8%, rgba(164, 125, 62, 0.14), transparent 34rem),
+    radial-gradient(circle at 92% 18%, rgba(103, 72, 39, 0.12), transparent 30rem),
+    var(--ink);
+  color: #f4efe5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overflow-x: hidden;
@@ -73,10 +81,11 @@ p {
 
 @layer components {
   .panel {
-    @apply rounded-3xl border border-white/[0.07] bg-white/[0.025] shadow-card backdrop-blur-xl;
+    @apply rounded-3xl border border-white/[0.09] bg-white/[0.035] shadow-card backdrop-blur-xl;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 24px 70px -42px rgba(0,0,0,0.95);
   }
   .panel-tight {
-    @apply rounded-2xl border border-white/[0.07] bg-white/[0.03];
+    @apply rounded-2xl border border-white/[0.09] bg-white/[0.045];
   }
   .grid-veil {
     background-image:
@@ -146,7 +155,7 @@ p {
     @apply border-t border-white/[0.07];
   }
   .focus-ring {
-    @apply outline-none focus-visible:ring-2 focus-visible:ring-aurora-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950;
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-aurora-300/80 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950;
   }
   .gradient-text {
     background: linear-gradient(100deg, #ffffff 10%, #bca6ff 48%, #cbff3d 96%);

@@ -80,8 +80,8 @@ export function AdminShell({
             className={cx(
               'group flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] transition',
               active
-                ? 'bg-gradient-to-r from-aurora-500/[0.18] to-transparent text-white ring-1 ring-inset ring-aurora-400/25'
-                : 'text-white/45 hover:bg-white/[0.04] hover:text-white/85'
+                ? 'bg-gradient-to-r from-aurora-500/[0.22] to-transparent text-white ring-1 ring-inset ring-aurora-300/30 shadow-[0_10px_30px_-18px_rgba(228,201,143,0.8)]'
+                : 'text-white/45 hover:bg-white/[0.05] hover:text-white/90'
             )}
           >
             <item.icon className={cx('h-4 w-4', active ? 'text-aurora-300' : 'text-white/30 group-hover:text-white/60')} />
@@ -103,7 +103,7 @@ export function AdminShell({
 
       <div className="mx-auto flex max-w-[1500px]">
         {/* sidebar */}
-        <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 flex-col border-r border-white/[0.07] bg-ink-950/40 px-4 py-5 backdrop-blur-xl lg:flex">
+        <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 flex-col border-r border-aurora-300/[0.12] bg-ink-950/65 px-4 py-5 backdrop-blur-xl lg:flex">
           <BrandLink href="/admin" />
 
           <div className="mt-7 flex-1">{NavList}</div>

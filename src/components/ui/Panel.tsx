@@ -39,7 +39,7 @@ export function SectionHead({
     <div className={cx('flex flex-wrap items-end justify-between gap-4', className)}>
       <div className="min-w-0">
         {eyebrow && <p className="eyebrow mb-2">{eyebrow}</p>}
-        <h2 className="text-xl font-semibold tracking-[-0.01em] text-white sm:text-[22px]">{title}</h2>
+        <h2 className="text-xl font-semibold tracking-[-0.025em] text-white sm:text-[24px]">{title}</h2>
         {sub && <p className="mt-1.5 max-w-2xl text-[13px] leading-relaxed text-white/45">{sub}</p>}
       </div>
       {action && <div className="shrink-0">{action}</div>}
