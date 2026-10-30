@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
@@ -27,10 +27,11 @@ import { Button, LinkButton } from '@/components/ui/Button';
 import { Input, Label } from '@/components/ui/Field';
 import { useToast } from '@/components/ui/Toast';
 import { useAuth } from '@/lib/auth';
-import { GoogleSignInError, firebaseConfigured } from '@/lib/firebase';
+import { GoogleSignInError, firebaseConfigured, preloadGoogleSignIn } from '@/lib/firebaseConfig';
 import { ApiError, firstName } from '@/lib/api';
-import { authHref, landingFor, type AuthRole } from '@/lib/nextPath';
+import { authHref, landingFor, parseAuthRole, safeNext, type AuthRole } from '@/lib/nextPath';
 import { SITE_NAME } from '@/lib/site';
+import { cleanOrg, ORG_LIMITS, orgProblem } from '@shared/org';
 
 const PANEL: Record<
   AuthRole,
@@ -109,14 +110,18 @@ export function SignupClient({ initialRole, next }: { initialRole: AuthRole; nex
     if (ready && user) router.replace(landingFor(user.role, next));
   }, [ready, user, router, next]);
 
+  // The Google sign-in code is not part of the page; fetch it while the person types.
+  useEffect(() => preloadGoogleSignIn(), []);
+
   const mismatch = confirm.length > 0 && confirm !== password;
   const canSubmit = useMemo(
     () =>
       name.trim().length > 0 &&
       email.trim().length > 0 &&
+      !orgProblem(org) &&
       passwordIssues(password).length === 0 &&
       confirm === password,
-    [name, email, password, confirm]
+    [name, email, org, password, confirm]
   );
 
   function changeRole(nextRole: AuthRole) {
@@ -139,6 +144,11 @@ export function SignupClient({ initialRole, next }: { initialRole: AuthRole; nex
     e.preventDefault();
     setError(null);
 
+    const orgIssue = orgProblem(org);
+    if (orgIssue) {
+      setError(orgIssue);
+      return;
+    }
     const issues = passwordIssues(password);
     if (issues.length) {
       setError(issues[0]!);
@@ -155,7 +165,7 @@ export function SignupClient({ initialRole, next }: { initialRole: AuthRole; nex
         name: name.trim(),
         email: email.trim(),
         password,
-        org: org.trim() || undefined
+        org: cleanOrg(org)
       });
       land(authed, `Welcome to ${SITE_NAME}, ${firstName(authed.name)}`);
     } catch (err) {
@@ -166,11 +176,18 @@ export function SignupClient({ initialRole, next }: { initialRole: AuthRole; nex
   }
 
   async function google() {
-    setGoogleBusy(true);
     setError(null);
+    // A new Google account needs the institute too; ask before opening the popup.
+    const orgIssue = orgProblem(org);
+    if (orgIssue) {
+      setError(`${orgIssue} first, then continue with Google.`);
+      document.getElementById('signup-org')?.focus();
+      return;
+    }
+    setGoogleBusy(true);
     try {
       // An existing account with this Google address is signed in, not duplicated.
-      const authed = await loginWithGoogle({ org: org.trim() || undefined });
+      const authed = await loginWithGoogle({ org: cleanOrg(org), portal: 'student' });
       land(authed, `Welcome, ${firstName(authed.name)}`);
     } catch (err) {
       if (err instanceof GoogleSignInError && err.cancelled) return;
@@ -258,9 +275,7 @@ export function SignupClient({ initialRole, next }: { initialRole: AuthRole; nex
               </div>
 
               <div>
-                <Label hint="optional" htmlFor="signup-org">
-                  Institute / class
-                </Label>
+                <Label htmlFor="signup-org">Institute, college, school or class</Label>
                 <div className="relative">
                   <Building2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
                   <Input
@@ -269,9 +284,16 @@ export function SignupClient({ initialRole, next }: { initialRole: AuthRole; nex
                     onChange={(e) => setOrg(e.target.value)}
                     placeholder="Your school, college or class"
                     className="pl-9"
+                    required
+                    minLength={ORG_LIMITS.min}
+                    maxLength={ORG_LIMITS.max}
+                    aria-describedby="signup-org-help"
                     autoComplete="organization"
                   />
                 </div>
+                <p id="signup-org-help" className="mt-1.5 text-[12px] text-white/45">
+                  Needed for Google sign-up too. Write it the way your institute is usually written.
+                </p>
               </div>
 
               <PasswordField
@@ -367,4 +389,10 @@ export function SignupClient({ initialRole, next }: { initialRole: AuthRole; nex
       </div>
     </AuthShell>
   );
+}
+
+/** Reads `?role=` and `?next=` in the browser, so the page itself can be static. */
+export function SignupFromQuery() {
+  const params = useSearchParams();
+  return <SignupClient initialRole={parseAuthRole(params.get('role'))} next={safeNext(params.get('next'))} />;
 }

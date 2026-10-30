@@ -85,6 +85,16 @@ export interface OwnerSession {
   revokedAt?: number;
 }
 
+/** The owner's console password (bcrypt hash), one record per owner email. `id` is the email. */
+export interface OwnerCredential {
+  id: string;
+  email: string;
+  passwordHash: string;
+  updatedAt: number;
+  /** True once the owner has chosen their own password in Settings. */
+  custom?: boolean;
+}
+
 export interface Store {
   users: StoredUser[];
   questions: Question[];
@@ -97,6 +107,7 @@ export interface Store {
   contactMessages: ContactMessage[];
   auditLogs: AuditEntry[];
   ownerSessions: OwnerSession[];
+  ownerCredentials: OwnerCredential[];
   /** emitted leaderboard cache busting / diagnostics */
   bootedAt: number;
 }
@@ -112,6 +123,7 @@ export const store: Store = {
   contactMessages: [],
   auditLogs: [],
   ownerSessions: [],
+  ownerCredentials: [],
   bootedAt: Date.now()
 };
 

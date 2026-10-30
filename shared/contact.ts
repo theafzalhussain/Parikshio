@@ -25,7 +25,7 @@ export type ContactRole = (typeof CONTACT_ROLES)[number]['key'];
 export const CONTACT_LIMITS = {
   name: 80,
   email: 160,
-  org: 120,
+  org: 80,
   messageMin: 10,
   messageMax: 4000
 } as const;

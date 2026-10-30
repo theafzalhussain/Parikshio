@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
-import { parseAuthRole, safeNext } from '@/lib/nextPath';
-import { SignupClient } from './SignupClient';
+import { Suspense } from 'react';
+import { SignupClient, SignupFromQuery } from './SignupClient';
 
 export const metadata: Metadata = {
   title: 'Create an account',
@@ -9,11 +9,14 @@ export const metadata: Metadata = {
   alternates: { canonical: '/signup' }
 };
 
-/** `?role=faculty` opens the faculty tab; `?next=` survives into sign-in. Read on the server for a flash-free first paint. */
-export default function SignupPage({
-  searchParams
-}: {
-  searchParams: { [key: string]: string | string[] | undefined };
-}) {
-  return <SignupClient initialRole={parseAuthRole(searchParams.role)} next={safeNext(searchParams.next)} />;
+/**
+ * A static page, served from the CDN closest to the visitor. `?role=faculty`
+ * and `?next=` are read in the browser; until then the student form is shown.
+ */
+export default function SignupPage() {
+  return (
+    <Suspense fallback={<SignupClient initialRole="student" next={null} />}>
+      <SignupFromQuery />
+    </Suspense>
+  );
 }

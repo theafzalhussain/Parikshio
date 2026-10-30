@@ -39,8 +39,8 @@ const sections: LegalSection[] = [
     body: (
       <ul>
         <li>
-          <strong>Account details:</strong> your name, email address, role (student or faculty) and, if you add it, your
-          institute or class. Your password is never stored as typed; we keep only a bcrypt hash of it.
+          <strong>Account details:</strong> your name, email address, role (student or faculty) and your institute,
+          school or class. Your password is never stored as typed; we keep only a bcrypt hash of it.
         </li>
         <li>
           <strong>Google sign-in:</strong> if you continue with Google, we receive your name, email address, Google account
@@ -219,8 +219,8 @@ export default function PrivacyPage() {
     <LegalPage
       eyebrow="Legal"
       title="Privacy policy"
-      updated="29 October 2026"
-      updatedIso="2026-10-29"
+      updated="30 October 2026"
+      updatedIso="2026-10-30"
       intro={
         <p>
           This policy explains what Parikshio collects when you use it, why, who can see it, and how to ask for a copy or

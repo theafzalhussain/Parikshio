@@ -5,6 +5,7 @@ import { AuthProvider } from '@/lib/auth';
 import { ToastProvider } from '@/components/ui/Toast';
 import { BrandDefs } from '@/components/Logo';
 import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from '@/lib/site';
+import { API_ORIGIN_FOR_HINTS } from '@/lib/api';
 
 /**
  * Both faces are self-hosted by next/font at build time: no runtime request to
@@ -77,6 +78,11 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${sans.variable} ${display.variable}`} suppressHydrationWarning>
+      <head>
+        {/* The API lives on its own host: open the connection (DNS + TLS) while the page loads. */}
+        {API_ORIGIN_FOR_HINTS && <link rel="preconnect" href={API_ORIGIN_FOR_HINTS} crossOrigin="anonymous" />}
+        {API_ORIGIN_FOR_HINTS && <link rel="dns-prefetch" href={API_ORIGIN_FOR_HINTS} />}
+      </head>
       <body className="min-h-screen bg-ink-950 font-sans antialiased">
         {/* Shared SVG gradients for the logo and seal, defined once per page. */}
         <BrandDefs />

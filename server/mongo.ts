@@ -1,6 +1,6 @@
 import mongoose, { Schema } from 'mongoose';
 import { config } from './config';
-import { store, type ContactMessage, type ContactStatus, type OwnerSession } from './store';
+import { store, type ContactMessage, type ContactStatus, type OwnerCredential, type OwnerSession } from './store';
 import { hydrateAudit, setAuditSink, type AuditEntry } from './security';
 
 /**
@@ -30,7 +30,10 @@ const Models = {
   auditLogs:
     mongoose.models.AxiomAuditLog ?? mongoose.model('AxiomAuditLog', permissive, 'audit_logs'),
   ownerSessions:
-    mongoose.models.AxiomOwnerSession ?? mongoose.model('AxiomOwnerSession', permissive, 'owner_sessions')
+    mongoose.models.AxiomOwnerSession ?? mongoose.model('AxiomOwnerSession', permissive, 'owner_sessions'),
+  ownerCredentials:
+    mongoose.models.AxiomOwnerCredential ??
+    mongoose.model('AxiomOwnerCredential', permissive, 'owner_credentials')
 };
 
 let ready = false;
@@ -44,7 +47,7 @@ export async function initMongo(): Promise<boolean> {
   try {
     await mongoose.connect(config.mongoUri, { serverSelectionTimeoutMS: 3000 });
     ready = true;
-    const [users, questions, exams, responses, attempts, papers, passwordResets, auditLogs, ownerSessions] = await Promise.all([
+    const [users, questions, exams, responses, attempts, papers, passwordResets, auditLogs, ownerSessions, ownerCredentials] = await Promise.all([
       Models.users.find().lean(),
       Models.questions.find().lean(),
       Models.exams.find().lean(),
@@ -53,7 +56,8 @@ export async function initMongo(): Promise<boolean> {
       Models.papers.find().lean(),
       Models.passwordResets.find().lean(),
       Models.auditLogs.find().sort({ at: -1 }).limit(2000).lean(),
-      Models.ownerSessions.find().lean()
+      Models.ownerSessions.find().lean(),
+      Models.ownerCredentials.find().lean()
     ]);
     const clean = <T>(rows: Record<string, unknown>[]): T[] =>
       rows.map(({ _id, ...rest }) => ({ id: String(_id), ...rest }) as T);
@@ -78,6 +82,9 @@ export async function initMongo(): Promise<boolean> {
       store.passwordResets = store.passwordResets.filter((r) => r.expiresAt >= now && !r.usedAt);
       stale.forEach((r) => unpersist('passwordResets', r.id));
     }
+
+    // The owner's saved password (a bcrypt hash) comes back exactly as it was set.
+    store.ownerCredentials = clean<OwnerCredential>(ownerCredentials);
 
     // Owner sign-ins survive a restart until they expire or are signed out.
     const sessions = clean<OwnerSession>(ownerSessions);

@@ -91,8 +91,14 @@ class CacheLayer {
   async delPrefix(prefix: string): Promise<void> {
     if (this.client) {
       try {
-        const keys = await this.client.keys(`${prefix}*`);
-        if (keys.length) await this.client.del(...keys);
+        // SCAN walks the keyspace in small steps; KEYS would block Redis for
+        // every client while it scanned every key in one go.
+        let cursor = '0';
+        do {
+          const [next, keys] = await this.client.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 200);
+          cursor = next;
+          if (keys.length) await this.client.del(...keys);
+        } while (cursor !== '0');
       } catch {
         /* ignore */
       }

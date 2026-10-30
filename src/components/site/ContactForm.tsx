@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { ArrowRight, Building2, CircleCheck, Mail, Send, Star, User } from 'lucide-react';
 import { AuthAlert } from '@/components/auth/AuthShell';
 import { Button, LinkButton } from '@/components/ui/Button';
@@ -13,9 +14,11 @@ import {
   CONTACT_LIMITS,
   CONTACT_ROLES,
   CONTACT_TOPICS,
+  isContactTopic,
   type ContactRole,
   type ContactTopic
 } from '@shared/contact';
+import { cleanOrg, ORG_LIMITS, orgProblem } from '@shared/org';
 
 /** What to write for each topic: shown under the topic choice and as the message placeholder. */
 const TOPIC_GUIDE: Record<ContactTopic, { hint: string; placeholder: string }> = {
@@ -191,6 +194,11 @@ export function ContactForm({ initialTopic }: { initialTopic: ContactTopic }) {
       setError('Please tell us your name.');
       return;
     }
+    const orgIssue = orgProblem(org);
+    if (orgIssue) {
+      setError(`${orgIssue}.`);
+      return;
+    }
     if (body.length < CONTACT_LIMITS.messageMin) {
       setError(`Please write at least ${CONTACT_LIMITS.messageMin} characters.`);
       return;
@@ -205,7 +213,7 @@ export function ContactForm({ initialTopic }: { initialTopic: ContactTopic }) {
           role,
           name: name.trim(),
           email: email.trim(),
-          org: org.trim(),
+          org: cleanOrg(org),
           message: body,
           rating: topic === 'feedback' && rating > 0 ? rating : undefined,
           website
@@ -353,9 +361,7 @@ export function ContactForm({ initialTopic }: { initialTopic: ContactTopic }) {
       </div>
 
       <div>
-        <Label htmlFor="contact-org" hint="optional">
-          Institute, school or class
-        </Label>
+        <Label htmlFor="contact-org">Institute, college, school or class</Label>
         <div className="relative">
           <Building2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
           <Input
@@ -365,6 +371,8 @@ export function ContactForm({ initialTopic }: { initialTopic: ContactTopic }) {
             onChange={(e) => setOrg(e.target.value)}
             placeholder="Where you study or teach"
             className="pl-9"
+            required
+            minLength={ORG_LIMITS.min}
             maxLength={CONTACT_LIMITS.org}
             autoComplete="organization"
           />
@@ -434,4 +442,10 @@ export function ContactForm({ initialTopic }: { initialTopic: ContactTopic }) {
       </div>
     </form>
   );
+}
+
+/** Reads `?topic=` in the browser, so the contact page itself can be static. */
+export function ContactFormFromQuery() {
+  const raw = useSearchParams().get('topic');
+  return <ContactForm initialTopic={isContactTopic(raw) ? raw : 'general'} />;
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Ban, KeyRound, LogOut, Mail, Plus, RotateCcw, Save, Trash2, UserPlus } from 'lucide-react';
+import { ArrowLeft, Ban, Building2, KeyRound, LogOut, Mail, Plus, RotateCcw, Save, Trash2, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Input, Label, SegmentedControl, Select } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
@@ -10,7 +10,15 @@ import { Avatar, GradePill, Loading, StatusPill } from '@/components/ui/Pills';
 import { useToast } from '@/components/ui/Toast';
 import { cx } from '@/lib/api';
 import { ownerApi } from '@/lib/owner';
-import type { GrantResult, OwnerUserDetail, OwnerUserRow, OwnerUsersPage } from '@shared/owner';
+import type {
+  GrantResult,
+  OwnerOrganization,
+  OwnerOrganizationsList,
+  OwnerUserDetail,
+  OwnerUserRow,
+  OwnerUsersPage
+} from '@shared/owner';
+import { ORG_NONE } from '@shared/org';
 import { activityLabel } from './ActivitySection';
 import {
   ago,
@@ -30,7 +38,9 @@ import {
   useOwnerData
 } from './common';
 
-type Filter = 'all' | 'student' | 'admin' | 'suspended' | 'invited';
+type Filter = 'all' | 'student' | 'admin' | 'org' | 'suspended' | 'invited';
+type OrgPick = { key: string; name: string };
+type OrgSort = 'size' | 'name' | 'recent';
 
 export function UsersSection({
   focusUserId,
@@ -41,14 +51,19 @@ export function UsersSection({
   onFocusDone: () => void;
   onChanged: () => void;
 }) {
-  const [filter, setFilter] = useState<Filter>('all');
+  const [filter, setFilterState] = useState<Filter>('all');
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('newest');
   const [page, setPage] = useState(1);
   const [openId, setOpenId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  /** The organisation being looked at under the Organization filter. */
+  const [org, setOrg] = useState<OrgPick | null>(null);
+  const [orgRole, setOrgRole] = useState<'all' | 'student' | 'admin'>('all');
+  const [orgSort, setOrgSort] = useState<OrgSort>('size');
+  const [version, setVersion] = useState(0);
   const q = useDebounced(search.trim());
-  useEffect(() => setPage(1), [filter, q, sort]);
+  useEffect(() => setPage(1), [filter, q, sort, org, orgRole]);
   useEffect(() => {
     if (focusUserId) {
       setOpenId(focusUserId);
@@ -56,14 +71,34 @@ export function UsersSection({
     }
   }, [focusUserId, onFocusDone]);
 
+  function setFilter(next: Filter) {
+    setFilterState(next);
+    // The Organization tab always opens on the list of organisations.
+    setOrg(null);
+    setOrgRole('all');
+  }
+
+  function pickOrg(next: OrgPick) {
+    setOrg(next);
+    setOrgRole('all');
+    setSearch('');
+  }
+
+  const browsingOrgs = filter === 'org' && !org;
   const params = new URLSearchParams({ page: String(page), pageSize: '25', sort });
   if (filter === 'student' || filter === 'admin') params.set('role', filter);
   if (filter === 'suspended' || filter === 'invited') params.set('state', filter);
+  if (filter === 'org' && org) {
+    params.set('org', org.key);
+    if (orgRole !== 'all') params.set('role', orgRole);
+  }
   if (q) params.set('search', q);
-  const { data, error, loading, reload } = useOwnerData<OwnerUsersPage>(`/users?${params}`);
+  // While the organisation list is shown, the account list is not needed (the tab counts stay as they were).
+  const { data, error, loading, reload } = useOwnerData<OwnerUsersPage>(browsingOrgs ? null : `/users?${params}`);
 
   const changed = () => {
     void reload();
+    setVersion((v) => v + 1);
     onChanged();
   };
 
@@ -78,6 +113,7 @@ export function UsersSection({
             { value: 'all', label: 'Everyone', count: data?.counts.all },
             { value: 'student', label: 'Students', count: data?.counts.students },
             { value: 'admin', label: 'Faculty', count: data?.counts.faculty },
+            { value: 'org', label: 'Organization', count: data?.counts.organizations },
             { value: 'invited', label: 'Invited', count: data?.counts.invited },
             { value: 'suspended', label: 'Suspended', count: data?.counts.suspended }
           ]}
@@ -86,36 +122,205 @@ export function UsersSection({
           <UserPlus className="h-4 w-4" /> Add faculty
         </Button>
       </div>
+
+      {filter === 'org' && org && (
+        <div className="flex flex-col gap-3 rounded-2xl border border-gold-300/20 bg-gold-400/[0.04] p-3.5 sm:flex-row sm:items-center">
+          <button
+            type="button"
+            onClick={() => setOrg(null)}
+            className="focus-ring inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg px-2 py-1.5 text-[13px] text-white/60 hover:text-white sm:self-center"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" /> All organizations
+          </button>
+          <span className="flex min-w-0 flex-1 items-center gap-2.5">
+            <Building2 className="h-4 w-4 shrink-0 text-gold-300" />
+            <span className="truncate font-display text-[17px] text-white" title={org.name}>
+              {org.name}
+            </span>
+            {data && <Badge tone="gold">{data.total} {data.total === 1 ? 'account' : 'accounts'}</Badge>}
+          </span>
+          <SegmentedControl
+            value={orgRole}
+            onChange={setOrgRole}
+            options={[
+              { value: 'all', label: 'Everyone' },
+              { value: 'student', label: 'Students' },
+              { value: 'admin', label: 'Faculty' }
+            ]}
+          />
+        </div>
+      )}
+
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <SearchBox value={search} onChange={setSearch} placeholder="Search name, email or institute" label="Search accounts" />
+        <SearchBox
+          value={search}
+          onChange={setSearch}
+          placeholder={browsingOrgs ? 'Search organizations' : 'Search name, email or institute'}
+          label={browsingOrgs ? 'Search organizations' : 'Search accounts'}
+        />
         <div className="sm:ml-auto sm:w-48">
-          <Select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort accounts" className="h-11">
-            <option value="newest">Newest first</option>
-            <option value="oldest">Oldest first</option>
-            <option value="lastLogin">Last log-in</option>
-            <option value="name">Name A–Z</option>
-          </Select>
+          {browsingOrgs ? (
+            <Select value={orgSort} onChange={(e) => setOrgSort(e.target.value as OrgSort)} aria-label="Sort organizations" className="h-11">
+              <option value="size">Most accounts</option>
+              <option value="name">Name A–Z</option>
+              <option value="recent">Newest sign-up</option>
+            </Select>
+          ) : (
+            <Select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort accounts" className="h-11">
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="lastLogin">Last log-in</option>
+              <option value="name">Name A–Z</option>
+            </Select>
+          )}
         </div>
       </div>
 
-      {error && <ErrorNote message={error} onRetry={reload} />}
-      {!data && !error && <Loading label="Loading accounts" />}
-      {data && data.items.length === 0 && <EmptyList title="No accounts found" body="Try another filter or search." />}
+      {browsingOrgs ? (
+        <OrganizationList search={q} sort={orgSort} version={version} onPick={pickOrg} />
+      ) : (
+        <>
+          {error && <ErrorNote message={error} onRetry={reload} />}
+          {!data && !error && <Loading label="Loading accounts" />}
+          {data && data.items.length === 0 && <EmptyList title="No accounts found" body="Try another filter or search." />}
 
-      {data && data.items.length > 0 && (
-        <ul className={cx('space-y-2.5 transition', loading && 'opacity-70')}>
-          {data.items.map((u) => (
-            <li key={u.id}>
-              <UserRowCard user={u} onOpen={() => setOpenId(u.id)} />
-            </li>
-          ))}
-        </ul>
+          {data && data.items.length > 0 && (
+            <ul className={cx('space-y-2.5 transition', loading && 'opacity-70')}>
+              {data.items.map((u) => (
+                <li key={u.id}>
+                  <UserRowCard user={u} onOpen={() => setOpenId(u.id)} />
+                </li>
+              ))}
+            </ul>
+          )}
+          {data && <Pager page={data.page} pageSize={data.pageSize} total={data.total} onPage={setPage} />}
+        </>
       )}
-      {data && <Pager page={data.page} pageSize={data.pageSize} total={data.total} onPage={setPage} />}
 
       {openId && <UserPanel userId={openId} onClose={() => setOpenId(null)} onChanged={changed} />}
       <AddFacultyDialog open={adding} onClose={() => setAdding(false)} onDone={changed} />
     </div>
+  );
+}
+
+/**
+ * Every institute, school or class people gave when they created their
+ * account, with how many students and faculty belong to each. Picking one
+ * lists its accounts.
+ */
+function OrganizationList({
+  search,
+  sort,
+  version,
+  onPick
+}: {
+  search: string;
+  sort: OrgSort;
+  version: number;
+  onPick: (org: OrgPick) => void;
+}) {
+  const path = `/organizations${search ? `?search=${encodeURIComponent(search)}` : ''}`;
+  const { data, error, loading, reload } = useOwnerData<OwnerOrganizationsList>(path);
+  useEffect(() => {
+    if (version) void reload();
+  }, [version, reload]);
+
+  if (error) return <ErrorNote message={error} onRetry={reload} />;
+  if (!data) return <Loading label="Loading organizations" />;
+
+  const items = [...data.items].sort((a, b) =>
+    sort === 'name' ? a.name.localeCompare(b.name) : sort === 'recent' ? b.lastJoinedAt - a.lastJoinedAt : b.total - a.total || a.name.localeCompare(b.name)
+  );
+  const showUnset = !search && data.unset.total > 0;
+
+  if (!items.length && !showUnset) {
+    return (
+      <EmptyList
+        title={search ? 'No organization matches' : 'No organizations yet'}
+        body={search ? 'Try a shorter or different spelling.' : 'They appear here as students and faculty create accounts.'}
+      />
+    );
+  }
+
+  return (
+    <div className={cx('space-y-3 transition', loading && 'opacity-70')}>
+      <p className="text-[12.5px] text-white/45">
+        {items.length} {items.length === 1 ? 'organization' : 'organizations'}, from the institute, college, school or class each person
+        gave when their account was made. Different spellings of the same name are counted together.
+      </p>
+      <ul className="grid gap-2.5 md:grid-cols-2 2xl:grid-cols-3">
+        {items.map((o) => (
+          <li key={o.key}>
+            <OrganizationCard org={o} onOpen={() => onPick({ key: o.key, name: o.name })} />
+          </li>
+        ))}
+        {showUnset && (
+          <li>
+            <OrganizationCard
+              muted
+              org={{ key: ORG_NONE, name: 'No organization given', variants: [], lastJoinedAt: 0, ...data.unset }}
+              note="Accounts made before this field was required"
+              onOpen={() => onPick({ key: ORG_NONE, name: 'No organization given' })}
+            />
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
+function OrganizationCard({
+  org,
+  onOpen,
+  muted,
+  note
+}: {
+  org: OwnerOrganization;
+  onOpen: () => void;
+  muted?: boolean;
+  note?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cx(
+        'focus-ring group flex h-full w-full items-start gap-3 rounded-2xl border p-4 text-left transition',
+        muted
+          ? 'border-dashed border-white/[0.12] bg-transparent hover:border-white/25'
+          : 'border-white/[0.07] bg-ink-900/60 hover:border-gold-200/25 hover:bg-ink-880/80'
+      )}
+    >
+      <span
+        className={cx(
+          'grid h-10 w-10 shrink-0 place-items-center rounded-xl ring-1 ring-inset',
+          muted ? 'bg-white/[0.04] text-white/45 ring-white/10' : 'bg-gold-400/[0.08] text-gold-200 ring-gold-300/25'
+        )}
+      >
+        <Building2 className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className={cx('block truncate text-[14.5px] font-semibold', muted ? 'text-white/70' : 'text-white')} title={org.name}>
+          {org.name}
+        </span>
+        {org.variants.length > 0 && (
+          <span className="mt-0.5 block truncate text-[12px] text-white/40" title={org.variants.join(', ')}>
+            Also written as {org.variants.join(', ')}
+          </span>
+        )}
+        {note && <span className="mt-0.5 block text-[12px] text-white/40">{note}</span>}
+        <span className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-white/55">
+          <span>
+            <span className="num text-white/85">{org.students}</span> {org.students === 1 ? 'student' : 'students'}
+          </span>
+          <span>
+            <span className="num text-white/85">{org.faculty}</span> faculty
+          </span>
+          {org.lastJoinedAt > 0 && <span className="text-white/40">Last joined {fmtDate(org.lastJoinedAt)}</span>}
+        </span>
+      </span>
+      <span className="num shrink-0 rounded-lg bg-white/[0.06] px-2 py-1 text-[12px] text-white/70">{org.total}</span>
+    </button>
   );
 }
 
@@ -259,7 +464,7 @@ function UserPanel({ userId, onClose, onChanged }: { userId: string; onClose: ()
                   <Input id="u-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
                 </div>
                 <div>
-                  <Label htmlFor="u-org">Institute / class</Label>
+                  <Label htmlFor="u-org">Institute, college, school or class</Label>
                   <Input id="u-org" value={org} onChange={(e) => setOrg(e.target.value)} maxLength={120} />
                 </div>
                 <div className="sm:col-span-2">

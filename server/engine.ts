@@ -588,6 +588,17 @@ export function startAttemptSweeper(): void {
 
 // ── leaderboard ───────────────────────────────────────────────
 
+/**
+ * Remembers that a student opened this session with its code, so it shows in
+ * their lobby. Written once per student per session.
+ */
+export function noteStudentJoin(exam: Exam, studentId: string): void {
+  const joined = exam.joinedBy ?? [];
+  if (joined.includes(studentId)) return;
+  exam.joinedBy = [...joined, studentId];
+  persist('exams', exam as unknown as { id: string } & Record<string, unknown>);
+}
+
 export function getLeaderboard(examId: string): LeaderboardEntry[] {
   return rankResponses(db.responsesByExam(examId));
 }

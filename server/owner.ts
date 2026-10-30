@@ -8,6 +8,7 @@ import {
 } from 'express';
 import jwt from 'jsonwebtoken';
 import { config, isProd } from './config';
+import { burnPasswordCheck, hashPasswordAsync, verifyPasswordAsync } from './auth';
 import { cache, cacheKeys } from './cache';
 import { contactReference } from './contactRules';
 import { isDemoAccountEmail } from './demoAccounts';
@@ -42,8 +43,9 @@ import {
   safeEqual,
   type AuditEntry
 } from './security';
-import { db, store, uid, type ContactMessage, type OwnerSession, type PasswordReset, type StoredUser } from './store';
+import { db, store, uid, type ContactMessage, type OwnerCredential, type OwnerSession, type PasswordReset, type StoredUser } from './store';
 import { CONTACT_ROLES, contactTopicLabel, isContactTopic } from '../shared/contact';
+import { cleanOrg, ORG_NONE, orgKey } from '../shared/org';
 import type {
   GrantResult,
   OwnerAuditRow,
@@ -54,6 +56,8 @@ import type {
   OwnerMessage,
   OwnerMessagesPage,
   OwnerOverview,
+  OwnerOrganization,
+  OwnerOrganizationsList,
   OwnerRequestsPage,
   OwnerSessionRow,
   OwnerSignIn,
@@ -215,7 +219,11 @@ ownerApi.post('/auth/verify', verifyIpLimiter, (req: OwnerRequest, res) => {
     return refuse(`wrong code (attempt ${pending.attempts})`);
   }
   pendingCodes.delete(email);
+  res.json(openSession(email, req, ip));
+});
 
+/** Creates and stores an owner session and returns the sign-in the browser keeps. */
+function openSession(email: string, req: Request, ip: string): OwnerSignIn {
   const now = Date.now();
   const session: OwnerSession = {
     id: uid('own_'),
@@ -234,9 +242,87 @@ ownerApi.post('/auth/verify', verifyIpLimiter, (req: OwnerRequest, res) => {
     algorithm: 'HS256',
     expiresIn: Math.floor(config.owner.sessionTtlMs / 1000)
   });
-  const body: OwnerSignIn = { token, email, expiresAt: session.expiresAt };
-  res.json(body);
+  return { token, email, expiresAt: session.expiresAt };
+}
+
+// ── sign-in with a password ──────────────────────────────────────
+
+/*
+ * No password is written in this code: the repository is public. The owner's
+ * password lives only in the database, as a bcrypt hash. On a brand-new
+ * database there is none yet; the owner signs in once with an emailed code and
+ * sets one in Settings (or the server starts with OWNER_INITIAL_PASSWORD set,
+ * which is hashed and saved on first use and can then be removed).
+ */
+const PASSWORD_MIN = 8;
+const PASSWORD_MAX = 128;
+
+/** The owner's stored credential, or undefined while no password has been set. */
+async function credentialFor(email: string): Promise<OwnerCredential | undefined> {
+  const existing = store.ownerCredentials.find((c) => c.email === email);
+  if (existing) return existing;
+  const initial = (process.env.OWNER_INITIAL_PASSWORD ?? '').trim();
+  if (initial.length < PASSWORD_MIN) return undefined;
+  const credential: OwnerCredential = { id: email, email, passwordHash: await hashPasswordAsync(initial), updatedAt: Date.now() };
+  // Two first sign-ins can race while the hash is computed.
+  const raced = store.ownerCredentials.find((c) => c.email === email);
+  if (raced) return raced;
+  store.ownerCredentials.push(credential);
+  persist('ownerCredentials', asPersistable(credential));
+  return credential;
+}
+
+const loginIpLimiter = createRateLimiter({
+  name: 'owner-login:ip',
+  windowMs: 15 * 60_000,
+  max: 15,
+  message: 'Too many sign-in attempts from this network. Wait a few minutes and try again.'
 });
+const loginEmailLimiter = createRateLimiter({
+  name: 'owner-login:email',
+  windowMs: 15 * 60_000,
+  max: 8,
+  keyFor: emailKey,
+  message: 'Too many wrong passwords for this address. Wait 15 minutes, or sign in with an emailed code.'
+});
+/** A slow, patient guesser is capped too: at most 30 tries a day for the owner address. */
+const loginEmailDailyLimiter = createRateLimiter({
+  name: 'owner-login:email-day',
+  windowMs: DAY_MS,
+  max: 30,
+  keyFor: emailKey,
+  message: 'Too many sign-in attempts for this address today. Sign in with an emailed code instead.'
+});
+
+ownerApi.post('/auth/login', loginIpLimiter, loginEmailLimiter, loginEmailDailyLimiter, asyncRoute(async (req, res) => {
+  if (!config.owner.enabled) return consoleOff(res);
+  const email = normEmail(req.body?.email);
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  const ip = clientIp(req);
+  const refuse = (detail: string) => {
+    recordAudit({ action: 'owner.login_failed', actorId: null, actorName: email || 'unknown', detail, ip });
+    return res.status(400).json({ error: 'Email or password is incorrect.', code: 'owner/bad-password' });
+  };
+
+  if (!password || password.length > PASSWORD_MAX) return refuse('missing or oversized password');
+  if (!isOwnerEmail(email)) {
+    // Do the same work as a real check so the reply time does not reveal the owner address.
+    await burnPasswordCheck(password);
+    return refuse('not an owner address');
+  }
+  const credential = await credentialFor(email);
+  if (!credential) {
+    await burnPasswordCheck(password);
+    recordAudit({ action: 'owner.login_failed', actorId: null, actorName: email, detail: 'no password set yet', ip });
+    return res.status(400).json({
+      error: 'Password sign-in is not set up yet. Use “Email me a code instead”, then set a password in Settings.',
+      code: 'owner/no-password'
+    });
+  }
+  if (!(await verifyPasswordAsync(password, credential.passwordHash))) return refuse('wrong password');
+  res.json(openSession(email, req, ip));
+}));
+
 
 // ── everything below needs an owner session ──────────────────────
 
@@ -282,6 +368,55 @@ function revokeSession(session: OwnerSession) {
   store.ownerSessions = store.ownerSessions.filter((s) => s.id !== session.id);
   unpersist('ownerSessions', session.id);
 }
+
+const passwordChangeLimiter = createRateLimiter({
+  name: 'owner-password-change',
+  windowMs: 15 * 60_000,
+  max: 10,
+  message: 'Too many password change attempts. Wait a few minutes and try again.'
+});
+
+/** Whether the owner can sign in with a password yet (Settings shows "set" or "change"). */
+ownerApi.get('/auth/password', asyncRoute(async (req, res) => {
+  const credential = await credentialFor(req.owner!.email);
+  res.json({ set: !!credential, updatedAt: credential?.updatedAt ?? null });
+}));
+
+ownerApi.post('/auth/change-password', passwordChangeLimiter, asyncRoute(async (req, res) => {
+  const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+  const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+  const existing = await credentialFor(req.owner!.email);
+
+  // With no password yet (signed in by emailed code), the first one is set directly.
+  if (existing && (!currentPassword || !(await verifyPasswordAsync(currentPassword, existing.passwordHash)))) {
+    audit(req, 'password_change_failed', 'wrong current password');
+    return res.status(400).json({ error: 'The current password is incorrect.' });
+  }
+  if (newPassword.length < PASSWORD_MIN) {
+    return res.status(400).json({ error: `The new password needs at least ${PASSWORD_MIN} characters.` });
+  }
+  if (newPassword.length > PASSWORD_MAX) {
+    return res.status(400).json({ error: `The new password can be at most ${PASSWORD_MAX} characters.` });
+  }
+  if (existing && newPassword === currentPassword) {
+    return res.status(400).json({ error: 'Choose a password different from the current one.' });
+  }
+
+  const passwordHash = await hashPasswordAsync(newPassword);
+  const email = req.owner!.email;
+  const credential: OwnerCredential = existing ?? { id: email, email, passwordHash, updatedAt: Date.now() };
+  if (!existing) store.ownerCredentials.push(credential);
+  credential.passwordHash = passwordHash;
+  credential.updatedAt = Date.now();
+  credential.custom = true;
+  persist('ownerCredentials', asPersistable(credential));
+
+  // Every other device must sign in again with the new password.
+  const others = store.ownerSessions.filter((s) => s.id !== req.owner!.sessionId);
+  others.forEach(revokeSession);
+  audit(req, 'password_changed', `owner password ${existing ? 'changed' : 'set'}; ${others.length} other sign-in(s) ended`);
+  res.json({ ok: true, signedOutOthers: others.length, updatedAt: credential.updatedAt });
+}));
 
 ownerApi.post('/auth/logout', (req: OwnerRequest, res) => {
   const session = store.ownerSessions.find((s) => s.id === req.owner!.sessionId);
@@ -510,12 +645,63 @@ ownerApi.get(
 
 // ── users ────────────────────────────────────────────────────────
 
+/** Every organisation accounts gave, grouped so spelling variants count once. */
+function organizations(users: StoredUser[]): OwnerOrganizationsList {
+  const groups = new Map<string, { spellings: Map<string, number>; total: number; students: number; faculty: number; lastJoinedAt: number }>();
+  const unset = { total: 0, students: 0, faculty: 0 };
+  for (const u of users) {
+    const key = orgKey(u.org);
+    if (!key) {
+      unset.total += 1;
+      if (u.role === 'admin') unset.faculty += 1;
+      else unset.students += 1;
+      continue;
+    }
+    let group = groups.get(key);
+    if (!group) groups.set(key, (group = { spellings: new Map(), total: 0, students: 0, faculty: 0, lastJoinedAt: 0 }));
+    const spelling = cleanOrg(u.org);
+    group.spellings.set(spelling, (group.spellings.get(spelling) ?? 0) + 1);
+    group.total += 1;
+    if (u.role === 'admin') group.faculty += 1;
+    else group.students += 1;
+    group.lastJoinedAt = Math.max(group.lastJoinedAt, u.createdAt);
+  }
+  const items: OwnerOrganization[] = [...groups.entries()].map(([key, g]) => {
+    // The spelling most accounts used; ties go to the one with more capitals ("VDC" over "vdc").
+    const ranked = [...g.spellings.entries()].sort(
+      (a, b) => b[1] - a[1] || (b[0].match(/\p{Lu}/gu)?.length ?? 0) - (a[0].match(/\p{Lu}/gu)?.length ?? 0) || a[0].localeCompare(b[0])
+    );
+    return {
+      key,
+      name: ranked[0]![0],
+      variants: ranked.slice(1).map(([s]) => s),
+      total: g.total,
+      students: g.students,
+      faculty: g.faculty,
+      lastJoinedAt: g.lastJoinedAt
+    };
+  });
+  items.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  return { items, unset };
+}
+
+ownerApi.get('/organizations', (req: OwnerRequest, res) => {
+  const search = orgKey(queryText(req.query.search, 120));
+  const list = organizations(store.users);
+  if (search) {
+    list.items = list.items.filter((o) => o.key.includes(search) || o.variants.some((v) => orgKey(v).includes(search)));
+  }
+  res.json(list);
+});
+
 ownerApi.get('/users', (req: OwnerRequest, res) => {
   const { page, pageSize, skip } = paging(req.query);
   const search = queryText(req.query.search).toLowerCase();
   const role = req.query.role === 'student' || req.query.role === 'admin' ? (req.query.role as Role) : null;
   const state = queryText(req.query.state);
   const sort = queryText(req.query.sort) || 'newest';
+  // An organisation key from /organizations; ORG_NONE means "no organisation given".
+  const org = typeof req.query.org === 'string' ? (req.query.org === ORG_NONE ? ORG_NONE : orgKey(req.query.org)) : null;
   const stats = userStats();
 
   const all = store.users;
@@ -524,6 +710,7 @@ ownerApi.get('/users', (req: OwnerRequest, res) => {
     if (state === 'suspended' && !u.suspended) return false;
     if (state === 'active' && u.suspended) return false;
     if (state === 'invited' && !(u.role === 'admin' && !u.passwordHash && !u.googleId && u.invitedAt)) return false;
+    if (org !== null && orgKey(u.org) !== (org === ORG_NONE ? '' : org)) return false;
     if (search && ![u.name, u.email, u.org].some((v) => (v ?? '').toLowerCase().includes(search))) return false;
     return true;
   });
@@ -544,7 +731,8 @@ ownerApi.get('/users', (req: OwnerRequest, res) => {
       students: all.filter((u) => u.role === 'student').length,
       faculty: all.filter((u) => u.role === 'admin').length,
       suspended: all.filter((u) => u.suspended).length,
-      invited: all.filter((u) => u.role === 'admin' && !u.passwordHash && !u.googleId && u.invitedAt).length
+      invited: all.filter((u) => u.role === 'admin' && !u.passwordHash && !u.googleId && u.invitedAt).length,
+      organizations: new Set(all.map((u) => orgKey(u.org)).filter(Boolean)).size
     }
   };
   res.json(body);

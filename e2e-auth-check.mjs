@@ -136,7 +136,7 @@ const reg = await page.evaluate(async (em) => {
   const r = await fetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'E2E User', email: em, password: 'OldPass123', role: 'student' })
+    body: JSON.stringify({ name: 'E2E User', email: em, password: 'OldPass123', role: 'student', org: 'Axiom Institute' })
   });
   return r.status;
 }, email);

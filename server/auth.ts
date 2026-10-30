@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import type { NextFunction, Request, Response as ExpressResponse } from 'express';
@@ -22,6 +23,39 @@ export function verifyPassword(plain: string, hash: string): boolean {
   }
 }
 
+/**
+ * Non-blocking versions for request handlers. bcrypt is deliberately slow
+ * (tens of milliseconds per check); the async form yields to the event loop
+ * while it works, so one sign-in never stalls every other student's request
+ * or a live exam's socket traffic.
+ */
+export function hashPasswordAsync(plain: string): Promise<string> {
+  return bcrypt.hash(plain, BCRYPT_ROUNDS);
+}
+
+export async function verifyPasswordAsync(plain: string, hash: string): Promise<boolean> {
+  if (!hash) return false;
+  try {
+    return await bcrypt.compare(plain, hash);
+  } catch {
+    return false;
+  }
+}
+
+/** A real hash of a random secret: comparing against it costs the same time as a real check. */
+const TIMING_DECOY_HASH = bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), BCRYPT_ROUNDS);
+
+/**
+ * Spends the same time as a real password check. Used when the email is
+ * unknown, so the reply time does not reveal which addresses have accounts.
+ */
+export async function burnPasswordCheck(plain: string): Promise<void> {
+  await verifyPasswordAsync(plain, TIMING_DECOY_HASH);
+}
+
+/** Session tokens are HS256 only; pinning the algorithm closes off algorithm-confusion tricks. */
+const JWT_ALGORITHMS: jwt.Algorithm[] = ['HS256'];
+
 interface TokenPayload {
   sub: string;
   role: Role;
@@ -34,7 +68,7 @@ export function signToken(user: PublicUser, tokenVersion = 0): string {
   // `expiresIn` is typed as a template-literal duration; config carries a plain
   // string from the environment, so it is narrowed here.
   const expiresIn = config.sessionTtl as jwt.SignOptions['expiresIn'];
-  return jwt.sign(payload, config.jwtSecret, { expiresIn });
+  return jwt.sign(payload, config.jwtSecret, { expiresIn, algorithm: 'HS256' });
 }
 
 /**
@@ -108,7 +142,7 @@ export function authenticate(req: AuthedRequest, res: ExpressResponse, next: Nex
     return res.status(fail.status).json({ error: fail.error, code: fail.code });
   }
   try {
-    const payload = jwt.verify(token, config.jwtSecret) as TokenPayload;
+    const payload = jwt.verify(token, config.jwtSecret, { algorithms: JWT_ALGORITHMS }) as TokenPayload;
     const user = db.userById(payload.sub);
     if (!user) {
       const fail = failureResponse('unknown-user');
@@ -146,7 +180,7 @@ export function requireRole(role: Role) {
 /** Verifies a socket handshake token. Returns the user or null. */
 export function userFromToken(token: string): PublicUser | null {
   try {
-    const payload = jwt.verify(token, config.jwtSecret) as TokenPayload;
+    const payload = jwt.verify(token, config.jwtSecret, { algorithms: JWT_ALGORITHMS }) as TokenPayload;
     const user = db.userById(payload.sub);
     if (!user || user.suspended) return null;
     if ((payload.v ?? 0) !== (user.tokenVersion ?? 0)) return null;

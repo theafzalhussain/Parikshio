@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { LogOut, MailCheck, MonitorSmartphone, ShieldCheck } from 'lucide-react';
+import { KeyRound, LogOut, MailCheck, MonitorSmartphone, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { Input, Label } from '@/components/ui/Field';
 import { Badge, Panel } from '@/components/ui/Panel';
 import { Loading } from '@/components/ui/Pills';
 import { useToast } from '@/components/ui/Toast';
@@ -22,6 +23,100 @@ function device(ua: string): string {
   const browser = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
   const os = /Windows/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Mac OS/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '';
   return os ? `${browser} on ${os}` : browser;
+}
+
+/**
+ * Sets or changes the owner password. It is stored only in the database (as a
+ * bcrypt hash); changing it ends the owner's other sign-ins.
+ */
+function PasswordCard() {
+  const { push } = useToast();
+  const status = useOwnerData<{ set: boolean; updatedAt: number | null }>('/auth/password');
+  const hasPassword = status.data?.set ?? true;
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setError(null);
+    if (next.length < 8) return setError('The new password needs at least 8 characters.');
+    if (next !== confirm) return setError('The new password and its confirmation do not match.');
+    if (hasPassword && next === current) return setError('Choose a password different from the current one.');
+    setBusy(true);
+    try {
+      const res = await ownerApi<{ signedOutOthers: number }>('/auth/change-password', {
+        method: 'POST',
+        body: { currentPassword: hasPassword ? current : '', newPassword: next }
+      });
+      setCurrent('');
+      setNext('');
+      setConfirm('');
+      await status.reload();
+      push({
+        kind: 'success',
+        title: hasPassword ? 'Password updated' : 'Password set',
+        body: res.signedOutOthers
+          ? `${res.signedOutOthers} other sign-in(s) were ended. Use the new password next time.`
+          : 'Use it with your owner email next time you sign in.'
+      });
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <div className="flex items-center gap-2">
+        <KeyRound className="h-4 w-4 text-gold-300" />
+        <h2 className="font-display text-[19px] text-white">Owner password</h2>
+      </div>
+      <p className="mt-1.5 text-[13px] leading-relaxed text-white/55">
+        {hasPassword
+          ? 'Used with your owner email to sign in. It is saved in the database. Changing it ends your other sign-ins.'
+          : 'No password is set yet, so sign-in works only with an emailed code. Set one to sign in with your email and password.'}
+        {status.data?.updatedAt ? ` Last changed ${fmtDateTime(status.data.updatedAt)}.` : ''}
+      </p>
+      <div className={`mt-4 grid gap-4 ${hasPassword ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
+        {hasPassword && (
+          <div>
+            <Label htmlFor="pw-current">Current password</Label>
+            <Input id="pw-current" type={show ? 'text' : 'password'} autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
+          </div>
+        )}
+        <div>
+          <Label htmlFor="pw-new">New password</Label>
+          <Input id="pw-new" type={show ? 'text' : 'password'} autoComplete="new-password" required minLength={8} maxLength={128} value={next} onChange={(e) => setNext(e.target.value)} />
+        </div>
+        <div>
+          <Label htmlFor="pw-confirm">Confirm new password</Label>
+          <Input id="pw-confirm" type={show ? 'text' : 'password'} autoComplete="new-password" required minLength={8} maxLength={128} value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        </div>
+      </div>
+      <label className="mt-3 inline-flex items-center gap-2 text-[12.5px] text-white/55">
+        <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} /> Show passwords
+      </label>
+      {error && (
+        <p role="alert" className="mt-3 text-[13px] text-ember-300">
+          {error}
+        </p>
+      )}
+      <div className="mt-4">
+        <Button type="submit" variant="gold" loading={busy} disabled={(hasPassword && !current) || !next || !confirm}>
+          <KeyRound className="h-4 w-4" /> {hasPassword ? 'Update password' : 'Set password'}
+        </Button>
+      </div>
+    </form>
+  );
 }
 
 export function SettingsSection({ onSignedOut }: { onSignedOut: () => void }) {
@@ -157,6 +252,10 @@ export function SettingsSection({ onSignedOut }: { onSignedOut: () => void }) {
       </Panel>
 
       <Panel className="p-5 sm:p-6 xl:col-span-2">
+        <PasswordCard />
+      </Panel>
+
+      <Panel className="p-5 sm:p-6 xl:col-span-2">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-4 w-4 text-gold-300" />
           <h2 className="font-display text-[19px] text-white">Server</h2>
@@ -183,8 +282,8 @@ export function SettingsSection({ onSignedOut }: { onSignedOut: () => void }) {
           </dl>
         )}
         <p className="mt-5 text-[12.5px] leading-relaxed text-white/45">
-          Who can open this console is set by <span className="font-mono text-white/70">OWNER_EMAILS</span> on the server
-          (Render → Environment). Nothing here can change it, so a stolen sign-in cannot add a new owner.
+          The owner email is fixed on the server, and nothing here can change it, so a stolen sign-in cannot add a new
+          owner. Change the password in the card above.
         </p>
       </Panel>
     </div>

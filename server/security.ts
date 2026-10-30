@@ -41,8 +41,34 @@ function sweep(now: number): void {
   }
 }
 
+/**
+ * Render puts every service behind Cloudflare and a proxy on the same machine,
+ * so the connection always comes from a private address (production sign-ins
+ * were all recorded as 127.0.0.1). Every visitor then shared one rate-limit
+ * bucket: 40 sign-ups an hour for the whole site, and one attacker could lock
+ * everyone out of logging in. Cloudflare sets CF-Connecting-IP to the real
+ * visitor address and overwrites any value a client sends, so it is trusted
+ * only when running on Render (or when CLIENT_IP_HEADER opts in) and only when
+ * the request reached us through that local proxy.
+ */
+const CLOUDFLARE_IP_HEADER =
+  process.env.RENDER === 'true' || (process.env.CLIENT_IP_HEADER ?? '').trim().toLowerCase() === 'cf-connecting-ip';
+const PRIVATE_PEER = /^(?:::1$|127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|f[cd][0-9a-f]{2}:|fe80:)/i;
+const IP_LITERAL = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f:]{2,39})$/i;
+const EXPLICIT_PROXIES = (process.env.TRUSTED_PROXIES ?? '').trim().length > 0;
+
+function bare(address: string | undefined): string {
+  return (address ?? '').replace(/^::ffff:/i, '');
+}
+
 export function clientIp(req: Request): string {
-  return req.ip ?? req.socket.remoteAddress ?? 'unknown';
+  const peer = bare(req.socket?.remoteAddress);
+  if (CLOUDFLARE_IP_HEADER && !EXPLICIT_PROXIES && PRIVATE_PEER.test(peer)) {
+    const header = req.headers['cf-connecting-ip'];
+    const value = (Array.isArray(header) ? header[0] : header)?.trim() ?? '';
+    if (IP_LITERAL.test(value)) return value;
+  }
+  return bare(req.ip) || peer || 'unknown';
 }
 
 /** Counting limiter — every request through it consumes quota. */

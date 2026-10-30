@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, KeyRound, Mail, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff, KeyRound, Lock, Mail, ShieldCheck } from 'lucide-react';
 import { LogoMark } from '@/components/Logo';
 import { Button } from '@/components/ui/Button';
 import { Input, Label } from '@/components/ui/Field';
@@ -11,10 +11,12 @@ import { errorText } from './common';
 
 const RESEND_SECONDS = 30;
 
-/** Two steps: the owner address, then the 6-digit code emailed to it. */
+/** Email + password, or (second step) a 6-digit code emailed to the owner address. */
 export function OwnerLogin({ notice, onSignedIn }: { notice: string | null; onSignedIn: (s: OwnerSignIn) => void }) {
   const [step, setStep] = useState<'email' | 'code'>('email');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +25,11 @@ export function OwnerLogin({ notice, onSignedIn }: { notice: string | null; onSi
   const [cooldown, setCooldown] = useState(0);
   const codeRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => setEmail(lastOwnerEmail()), []);
+  useEffect(() => {
+    const last = lastOwnerEmail();
+    // An address remembered from before the owner email changed is no longer valid.
+    setEmail(last.endsWith('@parikshio.tech') ? '' : last);
+  }, []);
   useEffect(() => {
     if (cooldown <= 0) return;
     const t = window.setTimeout(() => setCooldown((c) => c - 1), 1000);
@@ -48,6 +54,24 @@ export function OwnerLogin({ notice, onSignedIn }: { notice: string | null; onSi
       setCooldown(RESEND_SECONDS);
     } catch (err) {
       setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signInWithPassword() {
+    setBusy(true);
+    setError(null);
+    try {
+      const session = await ownerApi<OwnerSignIn>('/auth/login', {
+        method: 'POST',
+        body: { email: email.trim(), password }
+      });
+      saveOwnerSession(session);
+      onSignedIn(session);
+    } catch (err) {
+      setError(errorText(err));
+      setPassword('');
     } finally {
       setBusy(false);
     }
@@ -88,7 +112,7 @@ export function OwnerLogin({ notice, onSignedIn }: { notice: string | null; onSi
           <p className="eyebrow mt-5">Parikshio · private</p>
           <h1 className="mt-2 font-display text-[30px] font-normal leading-tight text-white">Owner console</h1>
           <p className="mt-2 max-w-sm text-[14px] leading-relaxed text-white/55">
-            Sign in with a one-time code sent to your owner email.
+            Sign in with your owner email and password.
           </p>
         </div>
 
@@ -103,7 +127,7 @@ export function OwnerLogin({ notice, onSignedIn }: { notice: string | null; onSi
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                void requestCode();
+                if (email.trim() && password) void signInWithPassword();
               }}
             >
               <Label htmlFor="owner-email">Owner email</Label>
@@ -117,18 +141,50 @@ export function OwnerLogin({ notice, onSignedIn }: { notice: string | null; onSi
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@parikshio.tech"
+                  placeholder="owner email"
                   className="h-12 pl-10"
                 />
+              </div>
+              <div className="mt-4">
+                <Label htmlFor="owner-password">Password</Label>
+                <div className="relative">
+                  <Lock className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gold-200/60" />
+                  <Input
+                    id="owner-password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Your owner password"
+                    className="h-12 pl-10 pr-11"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="focus-ring absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-white/50 hover:text-white"
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
               {error && (
                 <p role="alert" className="mt-3 text-[13px] text-ember-300">
                   {error}
                 </p>
               )}
-              <Button type="submit" variant="gold" size="lg" className="mt-5 w-full" loading={busy} disabled={!email.trim()}>
-                Send code
+              <Button type="submit" variant="gold" size="lg" className="mt-5 w-full" loading={busy} disabled={!email.trim() || !password}>
+                <ShieldCheck className="h-4 w-4" /> Sign in
               </Button>
+              <button
+                type="button"
+                onClick={() => void requestCode()}
+                disabled={busy || !email.trim()}
+                className="focus-ring mt-4 w-full rounded-lg py-1 text-center text-[13px] font-medium text-gold-200 hover:text-gold-100 disabled:cursor-not-allowed disabled:text-white/35"
+              >
+                Forgot password? Email me a code instead
+              </button>
             </form>
           ) : (
             <form

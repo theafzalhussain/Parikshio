@@ -64,19 +64,38 @@ const SESSION_DEAD_CODES = new Set([
 
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
   const token = getToken();
+  const hasBody = options.body !== undefined && options.body !== null;
   const res = await fetch(`${API_ORIGIN}/api${path}`, {
     method: options.method ?? 'GET',
     headers: {
-      'Content-Type': 'application/json',
+      // Sent only with a body: a plain GET without it is a "simple" request,
+      // which spares an extra CORS round trip when no token is attached.
+      ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     },
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    body: hasBody ? JSON.stringify(options.body) : undefined,
     signal: options.signal,
     cache: 'no-store'
   });
 
   return unwrap<T>(res, 'Something went wrong', options.skipAuthRedirect);
 }
+
+let wakeSent = false;
+/**
+ * The API runs on a host that sleeps when idle. Pinging it as soon as a page
+ * opens starts the wake-up while the visitor is still reading or typing, so the
+ * first real request (often the log-in) does not pay for it. A no-header GET is
+ * a simple request: no CORS preflight, nothing sensitive, at most once per page load.
+ */
+export function wakeServer(): void {
+  if (wakeSent || typeof window === 'undefined' || !API_ORIGIN) return;
+  wakeSent = true;
+  void fetch(`${API_ORIGIN}/healthz`, { mode: 'no-cors', cache: 'no-store', keepalive: true }).catch(() => undefined);
+}
+
+/** The API origin, for a `preconnect` hint (empty when the API is same-origin). */
+export const API_ORIGIN_FOR_HINTS = API_ORIGIN;
 
 /** POST helper for multipart uploads (the JSON helper can't carry FormData). */
 export async function apiUpload<T>(path: string, form: FormData): Promise<T> {

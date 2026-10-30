@@ -86,7 +86,27 @@ export interface OwnerUserDetail extends OwnerUserRow {
 }
 
 export interface OwnerUsersPage extends Paged<OwnerUserRow> {
-  counts: { all: number; students: number; faculty: number; suspended: number; invited: number };
+  counts: { all: number; students: number; faculty: number; suspended: number; invited: number; organizations: number };
+}
+
+/** One organisation (institute, school or class) and how many accounts gave it. */
+export interface OwnerOrganization {
+  /** Grouping key sent back as `/users?org=` (or ORG_NONE for accounts without one). */
+  key: string;
+  /** The spelling most of its accounts used. */
+  name: string;
+  /** Other spellings that were grouped into it, e.g. "vdc" for "VDC". */
+  variants: string[];
+  total: number;
+  students: number;
+  faculty: number;
+  lastJoinedAt: number;
+}
+
+export interface OwnerOrganizationsList {
+  items: OwnerOrganization[];
+  /** Accounts that never gave an organisation (created before it was required). */
+  unset: { total: number; students: number; faculty: number };
 }
 
 export interface OwnerMessage {

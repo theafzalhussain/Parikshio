@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import {
   ArrowRight,
@@ -25,9 +25,9 @@ import { Button } from '@/components/ui/Button';
 import { Input, Label } from '@/components/ui/Field';
 import { useToast } from '@/components/ui/Toast';
 import { useAuth } from '@/lib/auth';
-import { GoogleSignInError, firebaseConfigured } from '@/lib/firebase';
+import { GoogleSignInError, firebaseConfigured, preloadGoogleSignIn } from '@/lib/firebaseConfig';
 import { ApiError, cx, firstName } from '@/lib/api';
-import { authHref, landingFor, type AuthRole } from '@/lib/nextPath';
+import { authHref, landingFor, parseAuthRole, safeNext, type AuthRole } from '@/lib/nextPath';
 import { SITE_NAME } from '@/lib/site';
 
 type DemoKey = 'admin' | 'student';
@@ -103,6 +103,8 @@ export function LoginClient({ initialRole, next }: { initialRole: AuthRole; next
   const [busy, setBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Set when the fix is another tab or the sign-up page, to offer a one-click shortcut. */
+  const [errorHint, setErrorHint] = useState<null | { kind: 'portal'; portal: AuthRole } | { kind: 'signup' }>(null);
   const [demoFilled, setDemoFilled] = useState(false);
   const [demoCredentials, setDemoCredentials] = useState<DemoCredentials | null>(null);
   const [demoLoadError, setDemoLoadError] = useState(false);
@@ -113,6 +115,9 @@ export function LoginClient({ initialRole, next }: { initialRole: AuthRole; next
   useEffect(() => {
     if (ready && user) router.replace(landingFor(user.role, next));
   }, [ready, user, router, next]);
+
+  // The Google sign-in code is not part of the page; fetch it while the person types.
+  useEffect(() => preloadGoogleSignIn(), []);
 
   useEffect(() => {
     if (!showDemoAccounts) return;
@@ -140,6 +145,7 @@ export function LoginClient({ initialRole, next }: { initialRole: AuthRole; next
     if (nextRole === role) return;
     setRole(nextRole);
     setError(null);
+    setErrorHint(null);
     setDemoFilled(false);
     syncRoleToUrl(nextRole);
   }
@@ -152,36 +158,40 @@ export function LoginClient({ initialRole, next }: { initialRole: AuthRole; next
     clearSessionNotice();
   }
 
-  /** Signs the user into their own area, saying so when it differs from the tab they picked. */
+  /** Signs the user into their own area (the server has already checked it matches the tab). */
   function land(authed: PublicUser) {
-    const greeting = firstName(authed.name);
-    const expected = role === 'faculty' ? 'admin' : 'student';
-    const otherArea =
-      authed.role === 'admin'
-        ? 'This is a faculty account, so we opened the faculty console.'
-        : 'This is a student account, so we opened your exam lobby.';
     push({
       kind: 'success',
-      title: `Welcome back, ${greeting}`,
-      body:
-        authed.role !== expected
-          ? otherArea
-          : authed.role === 'admin'
-            ? 'Opening the faculty console…'
-            : 'Opening your exam lobby…'
+      title: `Welcome back, ${firstName(authed.name)}`,
+      body: authed.role === 'admin' ? 'Opening the faculty console…' : 'Opening your exam lobby…'
     });
     router.replace(landingFor(authed.role, next));
+  }
+
+  /** Shows a sign-in failure, with a shortcut when the fix is another tab or the sign-up page. */
+  function showError(err: unknown, fallback: string) {
+    setError(err instanceof GoogleSignInError || err instanceof ApiError ? err.message : fallback);
+    const portal = err instanceof ApiError ? err.details?.portal : undefined;
+    if (err instanceof ApiError && err.code === 'auth/wrong-portal' && (portal === 'student' || portal === 'faculty')) {
+      setErrorHint({ kind: 'portal', portal });
+    } else if (err instanceof ApiError && err.code === 'auth/org-required') {
+      setErrorHint({ kind: 'signup' });
+    } else {
+      setErrorHint(null);
+    }
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
+    setErrorHint(null);
     clearSessionNotice();
     try {
-      land(await login(email.trim(), password));
+      // The server only accepts an account that belongs to the tab in use.
+      land(await login(email.trim(), password, role));
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not log you in right now');
+      showError(err, 'Could not log you in right now');
     } finally {
       setBusy(false);
     }
@@ -190,19 +200,17 @@ export function LoginClient({ initialRole, next }: { initialRole: AuthRole; next
   async function google() {
     setGoogleBusy(true);
     setError(null);
+    setErrorHint(null);
     clearSessionNotice();
     try {
       // The faculty tab never creates accounts: an unknown Google address is
-      // refused instead of quietly becoming a new student.
-      land(await loginWithGoogle(role === 'faculty' ? { mode: 'signin' } : undefined));
+      // refused instead of quietly becoming a new student. Each tab only opens
+      // its own kind of account.
+      land(await loginWithGoogle(role === 'faculty' ? { mode: 'signin', portal: 'faculty' } : { portal: 'student' }));
     } catch (err) {
       // A cancelled popup is a normal user action, not an error worth shouting about.
       if (err instanceof GoogleSignInError && err.cancelled) return;
-      setError(
-        err instanceof GoogleSignInError || err instanceof ApiError
-          ? err.message
-          : 'Google sign-in failed. Please try again.'
-      );
+      showError(err, 'Google sign-in failed. Please try again.');
     } finally {
       setGoogleBusy(false);
     }
@@ -308,7 +316,34 @@ export function LoginClient({ initialRole, next }: { initialRole: AuthRole; next
             </Link>
           </div>
 
-          {error && <AuthAlert>{error}</AuthAlert>}
+          {error && (
+            <AuthAlert>
+              {error}
+              {errorHint?.kind === 'portal' && (
+                <>
+                  {' '}
+                  <button
+                    type="button"
+                    onClick={() => changeRole(errorHint.portal)}
+                    className="focus-ring rounded font-semibold text-gold-200 underline underline-offset-2 hover:text-gold-100"
+                  >
+                    Switch to {errorHint.portal === 'faculty' ? 'Faculty & admin' : 'Student'}
+                  </button>
+                </>
+              )}
+              {errorHint?.kind === 'signup' && (
+                <>
+                  {' '}
+                  <Link
+                    href={authHref('/signup', 'student', next)}
+                    className="focus-ring rounded font-semibold text-gold-200 underline underline-offset-2 hover:text-gold-100"
+                  >
+                    Create a student account
+                  </Link>
+                </>
+              )}
+            </AuthAlert>
+          )}
 
           <Button type="submit" size="lg" variant="gold" className="w-full" loading={busy} disabled={googleBusy}>
             Log in
@@ -340,4 +375,10 @@ export function LoginClient({ initialRole, next }: { initialRole: AuthRole; next
       </div>
     </AuthShell>
   );
+}
+
+/** Reads `?role=` and `?next=` in the browser, so the page itself can be static. */
+export function LoginFromQuery() {
+  const params = useSearchParams();
+  return <LoginClient initialRole={parseAuthRole(params.get('role'))} next={safeNext(params.get('next'))} />;
 }

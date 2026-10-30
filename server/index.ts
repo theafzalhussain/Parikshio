@@ -10,8 +10,8 @@ import { initMongo, mongoReady } from './mongo';
 import { seedIfEmpty } from './seed';
 import { db, store } from './store';
 import { userFromToken } from './auth';
-import { emitStaff, setIO, examRoom, staffRoom, staffLobby, userRoom, type AxiomIO } from './realtime';
-import { buildExamPublic, getLeaderboard, rearmTimers, startAttemptSweeper } from './engine';
+import { emitStaff, setIO, examRoom, staffRoom, userRoom, type AxiomIO } from './realtime';
+import { buildExamPublic, getLeaderboard, noteStudentJoin, rearmTimers, startAttemptSweeper } from './engine';
 import { resumeAiQueue } from './grading';
 import { studentsSeeLeaderboard } from './sessionRules';
 import type { ClientToServerEvents, PublicUser, Role, ServerToClientEvents } from '../shared/types';
@@ -74,15 +74,33 @@ async function main() {
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustedProxies);
 
-  // Baseline hardening. The UI and API are same-origin, so we can be strict.
+  // Answered before any other middleware: uptime pings and the browser's
+  // "wake the server" request cost nothing, and never need CORS or a body parser.
+  app.get('/healthz', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.json({ ok: true });
+  });
+
+  // Baseline hardening for every response. Pages get their full policy
+  // (CSP, framing, permissions) from next.config.mjs.
   app.use((_req, res, nextFn) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('X-DNS-Prefetch-Control', 'off');
     if (isProd) {
       res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     }
+    nextFn();
+  });
+
+  // API answers are JSON for one signed-in person: never framed, never run as
+  // a page, and never stored by a browser or shared cache.
+  app.use('/api', (_req, res, nextFn) => {
+    res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     nextFn();
   });
 
@@ -93,6 +111,9 @@ async function main() {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      // Browsers may reuse this answer for two hours (Chrome's ceiling) instead of
+      // asking again before every API call: one round trip to the server saved per request.
+      res.setHeader('Access-Control-Max-Age', '7200');
       res.setHeader('Vary', 'Origin');
     }
     if (req.method === 'OPTIONS') {
@@ -103,7 +124,10 @@ async function main() {
   });
   app.use('/api/owner', ownerApi);
   app.use('/api', api);
-  app.get('/healthz', (_req, res) => res.json({ ok: true }));
+  // An unknown API path is a JSON 404, not the website's HTML 404 page.
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Not found', code: 'not-found' });
+  });
   app.all('*', (req, res) => handle(req, res));
 
   /**
@@ -143,13 +167,27 @@ async function main() {
     const role: Role = user.role;
     socket.emit('time:sync', { serverTime: Date.now() });
     socket.join(userRoom(user.id));
-    if (role === 'admin') socket.join(staffLobby);
+
+    // Exam codes are the key to a session: a socket may try only a handful a minute.
+    let joinWindowStart = Date.now();
+    let joinsInWindow = 0;
 
     socket.on('join:exam', (payload) => {
-      const exam = db.examByCode(String(payload?.examCode ?? ''));
+      const now = Date.now();
+      if (now - joinWindowStart > 60_000) {
+        joinWindowStart = now;
+        joinsInWindow = 0;
+      }
+      if (++joinsInWindow > 30) return;
+
+      const exam = db.examByCode(String(payload?.examCode ?? '').slice(0, 16));
       if (!exam) return;
       // The REST equivalent refuses draft exams for students; match it here.
       if (exam.status === 'draft' && role !== 'admin') return;
+      // Faculty watch only their own sessions: another teacher's live answer
+      // stream (student names, answers, grades) stays private to that teacher.
+      if (role === 'admin' && exam.adminId !== user.id) return;
+      if (role === 'student') noteStudentJoin(exam, user.id);
 
       const target = examRoom(exam.code);
       const staff = staffRoom(exam.code);
@@ -157,7 +195,7 @@ async function main() {
       // Without this a socket accumulates every exam room it has ever joined and
       // keeps receiving pushes for sessions it has moved on from.
       for (const room of [...socket.rooms]) {
-        if (room !== socket.id && room !== staffLobby && room !== own && room !== target && room !== staff) {
+        if (room !== socket.id && room !== own && room !== target && room !== staff) {
           socket.leave(room);
         }
       }

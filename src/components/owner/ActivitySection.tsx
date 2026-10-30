@@ -29,6 +29,8 @@ const LABELS: Record<string, string> = {
   'owner.login_failed': 'Owner sign-in failed',
   'owner.logout': 'Owner signed out',
   'owner.code_sent': 'Owner code sent',
+  'owner.password_changed': 'Owner password changed',
+  'owner.password_change_failed': 'Owner password change failed',
   'owner.code_refused': 'Code asked for non-owner email',
   'owner.code_email_failed': 'Owner code email failed',
   'owner.sessions_revoked': 'Owner sign-ins ended',

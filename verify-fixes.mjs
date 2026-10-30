@@ -203,7 +203,7 @@ const endsAt = pushed.json?.active?.endsAt ?? pushedAt + 6000;
 const waitMs = endsAt + 400 - Date.now(); // 400ms past the deadline, inside the 1500ms grace
 if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
 const student2 = await req('POST', '/api/auth/register', {
-  body: { name: 'Grace Tester', email: `grace-${Date.now()}@axiom.edu`, password: 'GracePass1', role: 'student' }
+  body: { name: 'Grace Tester', email: `grace-${Date.now()}@axiom.edu`, password: 'GracePass1', role: 'student', org: 'Axiom Institute' }
 });
 const lateSubmit = await req('POST', '/api/student/answers', {
   token: student2.json.token,
@@ -219,7 +219,7 @@ ok(
 // Well past the grace window it must be refused.
 await new Promise((r) => setTimeout(r, 2000));
 const student3 = await req('POST', '/api/auth/register', {
-  body: { name: 'Too Late', email: `late-${Date.now()}@axiom.edu`, password: 'LatePass1', role: 'student' }
+  body: { name: 'Too Late', email: `late-${Date.now()}@axiom.edu`, password: 'LatePass1', role: 'student', org: 'Axiom Institute' }
 });
 const tooLate = await req('POST', '/api/student/answers', {
   token: student3.json.token,

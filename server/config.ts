@@ -109,23 +109,16 @@ function emailFromEnv(name: string, fallback = ''): string {
 }
 
 /**
- * Who may open the owner console: a comma-separated list of email addresses.
- * Signing in needs a one-time code sent to one of them, so owning the inbox is
- * what grants access. Unset means the company inbox; `off` disables the
- * console entirely.
+ * Who may open the owner console. The owner address is fixed in code, so a
+ * stray environment variable can never swap it. Signing in needs this email
+ * plus the owner password (or a one-time code sent to the inbox). Only
+ * `OWNER_EMAILS=off` is honoured, and it disables the console entirely.
  */
-const DEFAULT_OWNER_EMAIL = 'support@parikshio.tech';
+const OWNER_EMAIL = 'theafzalhussain786@gmail.com';
 function ownerEmailsFromEnv(): string[] {
   const raw = (process.env.OWNER_EMAILS ?? '').replace(/[\u200B-\u200D\u2060\uFEFF\u202A-\u202E]/g, '').trim();
-  if (!raw) return [DEFAULT_OWNER_EMAIL];
   if (/^(off|none|disabled|false|0)$/i.test(raw)) return [];
-  const found = new Set<string>();
-  for (const part of raw.split(/[,;\s]+/)) {
-    const email = EMAIL_IN_TEXT.exec(part)?.[0];
-    if (email) found.add(email.toLowerCase());
-    else if (part) console.warn(`[config] OWNER_EMAILS entry ${JSON.stringify(part.slice(0, 60))} is not an email address — ignoring it.`);
-  }
-  return [...found];
+  return [OWNER_EMAIL];
 }
 
 function resolveOfflineSyncGraceMs(): number {

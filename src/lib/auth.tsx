@@ -2,15 +2,18 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { PublicUser } from '@shared/types';
-import { api, setSessionLostHandler, setToken } from './api';
-import { getGoogleIdToken } from './firebase';
+import { api, ApiError, setSessionLostHandler, setToken, wakeServer } from './api';
+import { getGoogleIdToken } from './firebaseConfig';
 
 export interface RegisterPayload {
   name: string;
   email: string;
   password: string;
-  org?: string;
+  org: string;
 }
+
+/** Which log-in tab a sign-in came from. */
+export type LoginPortal = 'student' | 'faculty';
 
 interface AuthState {
   user: PublicUser | null;
@@ -19,13 +22,14 @@ interface AuthState {
   /** Set when a session was dropped (expired / password changed) so pages can explain why. */
   sessionNotice: string | null;
   clearSessionNotice: () => void;
-  login: (email: string, password: string) => Promise<PublicUser>;
+  /** `portal` is the log-in tab: the server refuses an account of the other kind. */
+  login: (email: string, password: string, portal?: LoginPortal) => Promise<PublicUser>;
   register: (payload: RegisterPayload) => Promise<PublicUser>;
   /**
    * Runs the Google popup, exchanges the ID token for a Parikshio session.
    * `mode: 'signin'` refuses to create a new account for an unknown address.
    */
-  loginWithGoogle: (opts?: { org?: string; mode?: 'signin' }) => Promise<PublicUser>;
+  loginWithGoogle: (opts?: { org?: string; mode?: 'signin'; portal?: LoginPortal }) => Promise<PublicUser>;
   requestPasswordReset: (email: string) => Promise<{ message: string; devLink?: string }>;
   resetPassword: (token: string, password: string) => Promise<PublicUser>;
   changePassword: (currentPassword: string, password: string) => Promise<void>;
@@ -76,26 +80,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const stored = typeof window !== 'undefined' ? window.localStorage.getItem(TOKEN_KEY) : null;
     const storedUser = typeof window !== 'undefined' ? window.localStorage.getItem(USER_KEY) : null;
     if (!stored) {
+      // Nobody signed in yet: wake the API now, so their log-in is quick.
+      wakeServer();
       setReady(true);
       return;
     }
 
     setToken(stored);
     setTokenState(stored);
+    let cached: PublicUser | null = null;
     if (storedUser) {
       try {
-        setUser(JSON.parse(storedUser) as PublicUser);
+        cached = JSON.parse(storedUser) as PublicUser;
+        setUser(cached);
       } catch {
         /* corrupt cache — the /auth/me call below is the source of truth */
       }
     }
+    // With a cached account the panel opens at once instead of waiting a full
+    // round trip to the server. Every data request still carries the token, so
+    // nothing private loads unless the server accepts it; if the session turns
+    // out to be dead, the check below signs the person out.
+    if (cached?.id && cached.role) setReady(true);
 
     api<{ user: PublicUser }>('/auth/me', { skipAuthRedirect: true })
       .then((res) => {
         setUser(res.user);
         window.localStorage.setItem(USER_KEY, JSON.stringify(res.user));
       })
-      .catch(() => clearSession())
+      .catch((err: unknown) => {
+        // Only a rejected session signs the person out. A network blip, or the
+        // server still waking up, must not throw away a valid sign-in.
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) clearSession();
+        else if (!cached) clearSession();
+      })
       .finally(() => setReady(true));
   }, [clearSession]);
 
@@ -109,10 +127,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(
-    async (email: string, password: string) => {
+    async (email: string, password: string, portal?: LoginPortal) => {
       const res = await api<SessionResponse>('/auth/login', {
         method: 'POST',
-        body: { email, password },
+        body: { email, password, portal },
         skipAuthRedirect: true
       });
       persist(res.token, res.user);
@@ -135,12 +153,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loginWithGoogle = useCallback(
-    async (opts?: { org?: string; mode?: 'signin' }) => {
+    async (opts?: { org?: string; mode?: 'signin'; portal?: LoginPortal }) => {
       // Popup first — if the user cancels we never touch our own backend.
       const idToken = await getGoogleIdToken();
       const res = await api<SessionResponse & { created: boolean }>('/auth/google', {
         method: 'POST',
-        body: { idToken, org: opts?.org, mode: opts?.mode },
+        body: { idToken, org: opts?.org, mode: opts?.mode, portal: opts?.portal },
         skipAuthRedirect: true
       });
       persist(res.token, res.user);

@@ -3,11 +3,12 @@ import multer from 'multer';
 import type { Paper, PaperKind, Question, QuestionInput, QuestionType } from '../shared/types';
 import { parseQuestionPaper } from './extract';
 import { MAX_UPLOAD_BYTES, extractTextFromFile, kindForFile } from './files';
-import { emitAllStaff } from './realtime';
+import { emitUser, ioInstance, userRoom } from './realtime';
 import {
   activeWindow,
   analytics,
   buildExamPublic,
+  cachedLeaderboard,
   closeSet,
   deleteExam,
   deliveredCount,
@@ -15,6 +16,7 @@ import {
   getLeaderboard,
   lockQuestion,
   manualGrade,
+  noteStudentJoin,
   openSetQuestion,
   pushQuestion,
   pushSet,
@@ -50,13 +52,15 @@ import {
 import { isSubjective } from '../shared/grade';
 import {
   authenticate,
+  burnPasswordCheck,
   hashPassword,
+  hashPasswordAsync,
   issueSession,
   publicUser,
   requireRole,
   SUSPENDED_MESSAGE,
   userFromToken,
-  verifyPassword,
+  verifyPasswordAsync,
   type AuthedRequest
 } from './auth';
 import { verifyFirebaseIdToken } from './firebase';
@@ -82,6 +86,7 @@ import {
   resetPasswordLimiter
 } from './security';
 import { db, examCode, store, uid, type ContactMessage, type PasswordReset, type StoredUser } from './store';
+import { cleanOrg, orgProblem } from '../shared/org';
 import {
   CONTACT_LIMITS,
   CONTACT_ROLES,
@@ -92,7 +97,7 @@ import {
 import { DEMO_ACCOUNT_EMAILS, isDemoAccountEmail } from './demoAccounts';
 import { persist, unpersist, mongoReady } from './mongo';
 import { cache, cacheKeys } from './cache';
-import type { Exam } from '../shared/types';
+import type { Exam, Response as ExamResponse } from '../shared/types';
 
 /**
  * Express 4 ignores a promise rejected by a route handler: the request hangs
@@ -117,6 +122,61 @@ function asPersistable<T extends { id: string }>(doc: T) {
   return doc as unknown as { id: string } & Record<string, unknown>;
 }
 
+// ── Faculty ownership ─────────────────────────────────────────
+/**
+ * A faculty member's questions, papers and sessions (and the students' answers
+ * inside them) belong to that faculty member alone. Parikshio is used by many
+ * institutes at once, so one teacher must never read, change or delete another
+ * teacher's work. Anything owned by someone else answers 404, the same as
+ * something that does not exist, so ids cannot be probed.
+ */
+function isMine(req: AuthedRequest, ownerId: string | undefined): boolean {
+  return !!ownerId && ownerId === req.user!.id;
+}
+
+function myExam(req: AuthedRequest, id: unknown = req.params.id): Exam | undefined {
+  const exam = db.examById(String(id ?? ''));
+  return exam && isMine(req, exam.adminId) ? exam : undefined;
+}
+
+function myQuestion(req: AuthedRequest, id: unknown): Question | undefined {
+  const question = db.questionById(String(id ?? ''));
+  return question && isMine(req, question.createdBy) ? question : undefined;
+}
+
+function myPaper(req: AuthedRequest, id: unknown): Paper | undefined {
+  const paper = db.paperById(String(id ?? ''));
+  return paper && isMine(req, paper.uploadedBy) ? paper : undefined;
+}
+
+/** A response is the faculty member's when it was given in one of their sessions. */
+function myResponse(req: AuthedRequest, id: unknown): ExamResponse | undefined {
+  const response = db.responseById(String(id ?? ''));
+  if (!response) return undefined;
+  return myExam(req, response.examId) ? response : undefined;
+}
+
+function myExams(req: AuthedRequest): Exam[] {
+  return db.exams().filter((exam) => isMine(req, exam.adminId));
+}
+
+/** Every response grouped by session in one pass, instead of one full scan per session. */
+function responsesByExamIds(examIds: Set<string>): Map<string, ExamResponse[]> {
+  const grouped = new Map<string, ExamResponse[]>();
+  for (const response of store.responses) {
+    if (!examIds.has(response.examId)) continue;
+    const list = grouped.get(response.examId);
+    if (list) list.push(response);
+    else grouped.set(response.examId, [response]);
+  }
+  return grouped;
+}
+
+/** Ends every live connection of an account (after its password changes). */
+function disconnectSockets(userId: string): void {
+  ioInstance()?.in(userRoom(userId)).disconnectSockets(true);
+}
+
 // ── Auth ───────────────────────────────────────────────────────
 /**
  * Generic reply used for both "email not found" and "email sent" so the
@@ -135,6 +195,32 @@ function sanitiseEmail(value: unknown): string {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+/**
+ * The log-in page has a Student tab and a Faculty & admin tab. Each one only
+ * opens its own kind of account: correct credentials on the wrong tab are
+ * refused (no session is issued) with a pointer to the right tab.
+ * Requests that do not say which tab (older clients, scripts) are not checked.
+ */
+type Portal = 'student' | 'faculty';
+const portalFrom = (value: unknown): Portal | null => (value === 'student' || value === 'faculty' ? value : null);
+
+function wrongPortal(user: StoredUser, portal: Portal | null): { error: string; code: string; portal: Portal } | null {
+  if (!portal) return null;
+  const belongs: Portal = user.role === 'admin' ? 'faculty' : 'student';
+  if (belongs === portal) return null;
+  return belongs === 'student'
+    ? {
+        error: 'This is a student account. Switch to the Student tab to log in.',
+        code: 'auth/wrong-portal',
+        portal: 'student'
+      }
+    : {
+        error: 'This is a faculty account. Switch to the Faculty & admin tab to log in.',
+        code: 'auth/wrong-portal',
+        portal: 'faculty'
+      };
+}
 const classroomLimiter = createRateLimiter({
   name: 'google-classroom',
   windowMs: 60_000,
@@ -143,12 +229,13 @@ const classroomLimiter = createRateLimiter({
   message: 'Too many Google Classroom requests — wait a minute and try again.'
 });
 
-api.post('/auth/login', loginIpGuard, loginEmailGuard, (req, res) => {
+api.post('/auth/login', loginIpGuard, loginEmailGuard, asyncRoute(async (req, res) => {
   const email = sanitiseEmail(req.body?.email);
   const password = String(req.body?.password ?? '');
   const ip = clientIp(req);
 
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+  if (password.length > 256) return res.status(400).json({ error: 'Incorrect email or password.' });
 
   const user = db.userByEmail(email);
   if (isProd && isDemoAccountEmail(email)) {
@@ -162,7 +249,10 @@ api.post('/auth/login', loginIpGuard, loginEmailGuard, (req, res) => {
     });
     return res.status(401).json({ error: 'Incorrect email or password.' });
   }
-  if (!user || !verifyPassword(password, user.passwordHash)) {
+  // An unknown email still costs a full password check, so the reply time
+  // does not tell anyone which addresses have accounts.
+  const passwordOk = user ? await verifyPasswordAsync(password, user.passwordHash) : (await burnPasswordCheck(password), false);
+  if (!user || !passwordOk) {
     // Only wrong credentials advance the throttle — successful sign-ins are free,
     // so a classroom sharing one IP never locks itself out.
     penaliseLogin(ip, email);
@@ -188,6 +278,19 @@ api.post('/auth/login', loginIpGuard, loginEmailGuard, (req, res) => {
     return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'auth/suspended' });
   }
 
+  const misplaced = wrongPortal(user, portalFrom(req.body?.portal));
+  if (misplaced) {
+    // The password was right, so this does not count towards the lock-out.
+    recordAudit({
+      action: 'auth.login_wrong_portal',
+      actorId: user.id,
+      actorName: user.name,
+      detail: `role=${user.role} tried the ${misplaced.portal === 'student' ? 'faculty' : 'student'} tab`,
+      ip
+    });
+    return res.status(403).json(misplaced);
+  }
+
   user.lastLoginAt = Date.now();
   persist('users', asPersistable(user));
   clearLoginPenalties(ip, email);
@@ -199,7 +302,7 @@ api.post('/auth/login', loginIpGuard, loginEmailGuard, (req, res) => {
     ip
   });
   return res.json(issueSession(user));
-});
+}));
 
 api.get('/auth/me', authenticate, (req: AuthedRequest, res) => {
   return res.json({ user: req.user });
@@ -341,7 +444,7 @@ api.post('/exams/:id/classroom/publish-results', authenticate, requireRole('admi
   }
 }));
 
-api.post('/auth/register', registerLimiter, (req, res) => {
+api.post('/auth/register', registerLimiter, asyncRoute(async (req, res) => {
   const name = sanitiseName(req.body?.name, '');
   const email = sanitiseEmail(req.body?.email);
   const password = String(req.body?.password ?? '');
@@ -349,13 +452,13 @@ api.post('/auth/register', registerLimiter, (req, res) => {
     return res.status(403).json({ error: 'Faculty accounts must be provisioned by an administrator.' });
   }
   const role = 'student' as const;
-  // Blank stays blank: the old 'Axiom Institute' placeholder ended up shown as
-  // if it were the student's real institute.
-  const org = sanitiseName(req.body?.org, '');
+  const org = cleanOrg(req.body?.org);
   const ip = clientIp(req);
 
   if (!name) return res.status(400).json({ error: 'Full name is required' });
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email address' });
+  const orgIssue = orgProblem(org);
+  if (orgIssue) return res.status(400).json({ error: orgIssue, code: 'auth/org-required' });
   if (isProd && isDemoAccountEmail(email)) {
     return res.status(409).json({ error: 'This email is not available for public registration.' });
   }
@@ -365,13 +468,18 @@ api.post('/auth/register', registerLimiter, (req, res) => {
     return res.status(409).json({ error: 'This email is already registered. Try logging in instead.' });
   }
 
+  const passwordHash = await hashPasswordAsync(password);
+  // Two sign-ups for the same address can race while the hash is computed.
+  if (db.userByEmail(email)) {
+    return res.status(409).json({ error: 'This email is already registered. Try logging in instead.' });
+  }
   const user: StoredUser = {
     id: uid('stu_'),
     name,
     email,
     role,
     org,
-    passwordHash: hashPassword(password),
+    passwordHash,
     createdAt: Date.now(),
     emailVerified: false,
     tokenVersion: 0,
@@ -387,7 +495,7 @@ api.post('/auth/register', registerLimiter, (req, res) => {
     ip
   });
   res.status(201).json(issueSession(user));
-});
+}));
 
 /**
  * Google sign-in.
@@ -435,6 +543,20 @@ api.post('/auth/google', googleLimiter, asyncRoute(async (req, res) => {
     return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'auth/suspended' });
   }
 
+  if (user) {
+    const misplaced = wrongPortal(user, portalFrom(req.body?.portal));
+    if (misplaced) {
+      recordAudit({
+        action: 'auth.login_wrong_portal',
+        actorId: user.id,
+        actorName: user.name,
+        detail: `google; role=${user.role} tried the ${misplaced.portal === 'student' ? 'faculty' : 'student'} tab`,
+        ip
+      });
+      return res.status(403).json(misplaced);
+    }
+  }
+
   if (!user && req.body?.mode === 'signin') {
     // The faculty tab signs in only: a Google account with no Parikshio
     // account must not quietly become a new student account.
@@ -447,12 +569,22 @@ api.post('/auth/google', googleLimiter, asyncRoute(async (req, res) => {
   }
 
   if (!user) {
+    // A new account needs its institute / class, which only the sign-up page asks for.
+    const newOrg = cleanOrg(req.body?.org);
+    if (orgProblem(newOrg)) {
+      recordAudit({ action: 'auth.google_failed', actorId: null, actorName: email, detail: 'no account and no institute', ip });
+      return res.status(400).json({
+        error:
+          'No Parikshio account uses this Google address yet. Create a student account first: it asks for your institute, college, school or class.',
+        code: 'auth/org-required'
+      });
+    }
     user = {
       id: uid('stu_'),
       name: sanitiseName(name, email.split('@')[0]),
       email,
       role: 'student',
-      org: sanitiseName(req.body?.org, ''),
+      org: newOrg,
       // No password — this account signs in with Google only until it sets one.
       passwordHash: '',
       createdAt: Date.now(),
@@ -567,7 +699,7 @@ api.post('/auth/forgot-password', forgotPasswordLimiter, forgotPasswordEmailLimi
 }));
 
 /** Step 2 — consumes the token and sets the new password. */
-api.post('/auth/reset-password', resetPasswordLimiter, (req, res) => {
+api.post('/auth/reset-password', resetPasswordLimiter, asyncRoute(async (req, res) => {
   const token = String(req.body?.token ?? '');
   const password = String(req.body?.password ?? '');
   const ip = clientIp(req);
@@ -595,7 +727,7 @@ api.post('/auth/reset-password', resetPasswordLimiter, (req, res) => {
   if (!user) return res.status(400).json({ error: 'That account no longer exists' });
   if (user.suspended) return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'auth/suspended' });
 
-  user.passwordHash = hashPassword(password);
+  user.passwordHash = await hashPasswordAsync(password);
   // Bump the session generation so every existing JWT for this user dies.
   user.tokenVersion = (user.tokenVersion ?? 0) + 1;
   // Opening the emailed link proves the person controls this address.
@@ -604,6 +736,8 @@ api.post('/auth/reset-password', resetPasswordLimiter, (req, res) => {
   record.usedAt = Date.now();
   persist('users', asPersistable(user));
   persist('passwordResets', asPersistable(record));
+  // Open live connections were authorised by the old password too.
+  disconnectSockets(user.id);
   recordAudit({
     action: 'auth.reset_completed',
     actorId: user.id,
@@ -613,10 +747,10 @@ api.post('/auth/reset-password', resetPasswordLimiter, (req, res) => {
   });
 
   res.json({ ok: true, ...issueSession(user) });
-});
+}));
 
 /** Signed-in password change. Requires the current password unless none is set. */
-api.post('/auth/change-password', authenticate, (req: AuthedRequest, res) => {
+api.post('/auth/change-password', authenticate, asyncRoute(async (req: AuthedRequest, res) => {
   const user = db.userById(req.user!.id);
   if (!user) return res.status(404).json({ error: 'Account not found' });
 
@@ -625,7 +759,7 @@ api.post('/auth/change-password', authenticate, (req: AuthedRequest, res) => {
   const ip = clientIp(req);
 
   // Google-only accounts have no password yet, so they can set one directly.
-  if (user.passwordHash && !verifyPassword(currentPassword, user.passwordHash)) {
+  if (user.passwordHash && !(await verifyPasswordAsync(currentPassword, user.passwordHash))) {
     recordAudit({
       action: 'auth.change_password_failed',
       actorId: user.id,
@@ -638,9 +772,11 @@ api.post('/auth/change-password', authenticate, (req: AuthedRequest, res) => {
   const weak = passwordProblem(nextPassword);
   if (weak) return res.status(400).json({ error: weak });
 
-  user.passwordHash = hashPassword(nextPassword);
+  user.passwordHash = await hashPasswordAsync(nextPassword);
   user.tokenVersion = (user.tokenVersion ?? 0) + 1;
   persist('users', asPersistable(user));
+  // Other devices' live connections were opened with the old session.
+  disconnectSockets(user.id);
   recordAudit({
     action: 'auth.change_password',
     actorId: user.id,
@@ -649,33 +785,47 @@ api.post('/auth/change-password', authenticate, (req: AuthedRequest, res) => {
     ip
   });
   res.json({ ok: true, ...issueSession(user) });
-});
+}));
 
-/** Admin-visible security trail. */
+/** Security trail of the signed-in faculty member's own actions. */
 api.get('/admin/audit', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
   // `Number('abc')` is NaN, and `slice(-NaN)` returns the whole buffer — so the
   // 500-entry cap has to be applied to a known-finite number.
   const requested = Number(req.query.limit ?? 100);
   const limit = Number.isFinite(requested) ? Math.min(500, Math.max(1, Math.trunc(requested))) : 100;
-  res.json({ entries: listAudit(limit) });
+  // The full log holds every user's email and IP address; faculty see only their own entries.
+  const entries = listAudit(2000).filter((entry) => entry.actorId === req.user!.id).slice(0, limit);
+  res.json({ entries });
 });
 
 // ── Admin: overview ────────────────────────────────────────────
-api.get('/admin/overview', authenticate, requireRole('admin'), asyncRoute(async (_req: AuthedRequest, res) => {
-  const questions = store.questions;
-  const exams = db.exams();
-  const students = store.users.filter((u) => u.role === 'student');
+api.get('/admin/overview', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
+  // Everything here is the signed-in faculty member's own work.
+  const questions = store.questions.filter((q) => isMine(req, q.createdBy));
+  const exams = myExams(req);
+  const byExam = responsesByExamIds(new Set(exams.map((exam) => exam.id)));
+  const responses = [...byExam.values()].flat();
+  const examById = new Map(exams.map((exam) => [exam.id, exam]));
   const byType = QUESTION_TYPES.map((type) => ({
     type,
     count: questions.filter((q) => q.type === type).length
   }));
-  const graded = store.responses.filter((r) => r.grade !== 'pending');
-  const accuracy = graded.length
-    ? Math.round((store.responses.filter((r) => r.grade === 'correct').length / graded.length) * 100)
-    : 0;
+  let gradedCount = 0;
+  let correctCount = 0;
+  let pendingReviews = 0;
+  let aiGraded = 0;
+  const studentIds = new Set<string>();
+  for (const r of responses) {
+    studentIds.add(r.studentId);
+    if (r.grade === 'pending') pendingReviews++;
+    else gradedCount++;
+    if (r.grade === 'correct') correctCount++;
+    if (r.gradedBy === 'ai') aiGraded++;
+  }
+  const accuracy = gradedCount ? Math.round((correctCount / gradedCount) * 100) : 0;
 
   const rows = exams.map((exam) => {
-    const rowsForExam = store.responses.filter((r) => r.examId === exam.id);
+    const rowsForExam = byExam.get(exam.id) ?? [];
     const participants = new Set(rowsForExam.map((r) => r.studentId)).size;
     const avgScore = participants
       ? Number((rowsForExam.reduce((a, b) => a + b.awarded, 0) / participants).toFixed(1))
@@ -688,11 +838,11 @@ api.get('/admin/overview', authenticate, requireRole('admin'), asyncRoute(async 
     };
   });
 
-  const recentActivity = [...store.responses]
+  const recentActivity = [...responses]
     .sort((a, b) => b.submittedAt - a.submittedAt)
     .slice(0, 8)
     .map((r) => {
-      const exam = db.examById(r.examId);
+      const exam = examById.get(r.examId);
       return {
         id: r.id,
         studentName: r.studentName,
@@ -704,7 +854,7 @@ api.get('/admin/overview', authenticate, requireRole('admin'), asyncRoute(async 
       };
     });
 
-  const fastest = [...store.responses]
+  const fastest = responses
     .filter((r) => r.grade === 'correct')
     .sort((a, b) => a.latencyMs - b.latencyMs)
     .slice(0, 5)
@@ -715,11 +865,12 @@ api.get('/admin/overview', authenticate, requireRole('admin'), asyncRoute(async 
       questions: questions.length,
       exams: exams.length,
       liveExams: exams.filter((e) => e.status === 'live').length,
-      students: students.length,
-      responses: store.responses.length,
+      // Students who have answered in this faculty member's sessions.
+      students: studentIds.size,
+      responses: responses.length,
       accuracy,
-      pendingReviews: store.responses.filter((r) => r.grade === 'pending').length,
-      aiGraded: store.responses.filter((r) => r.gradedBy === 'ai').length
+      pendingReviews,
+      aiGraded
     },
     grading: gradingStatus(),
     byType,
@@ -735,12 +886,15 @@ api.get('/admin/overview', authenticate, requireRole('admin'), asyncRoute(async 
 
 // ── Admin: question bank ──────────────────────────────────────
 api.get('/questions', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
-  const rows = db.questions({
-    type: req.query.type as string | undefined,
-    search: req.query.q as string | undefined,
-    topic: req.query.topic as string | undefined,
-    paper: req.query.paper as string | undefined
-  });
+  const text = (value: unknown) => (typeof value === 'string' ? value.slice(0, 200) : undefined);
+  const rows = db
+    .questions({
+      type: text(req.query.type),
+      search: text(req.query.q),
+      topic: text(req.query.topic),
+      paper: text(req.query.paper)
+    })
+    .filter((q) => isMine(req, q.createdBy));
   res.json({ questions: rows });
 });
 
@@ -818,8 +972,8 @@ function questionFieldsFrom(input: QuestionInput) {
   return {
     type: input.type,
     prompt: String(input.prompt).trim(),
-    topic: String(input.topic ?? 'General').trim() || 'General',
-    difficulty: input.difficulty ?? 'medium',
+    topic: String(input.topic ?? 'General').trim().slice(0, 80) || 'General',
+    difficulty: (['easy', 'medium', 'hard'] as const).includes(input.difficulty) ? input.difficulty : 'medium',
     options:
       input.type === 'truefalse'
         ? ['True', 'False']
@@ -834,7 +988,7 @@ function questionFieldsFrom(input: QuestionInput) {
         : (input.acceptedAnswers ?? []).map((a) => String(a).trim()).filter(Boolean),
     points: Number(input.points),
     timerSeconds: Number(input.timerSeconds),
-    explanation: String(input.explanation ?? '')
+    explanation: String(input.explanation ?? '').slice(0, MAX_PROMPT_CHARS)
   };
 }
 
@@ -855,7 +1009,7 @@ api.post('/questions', authenticate, requireRole('admin'), (req: AuthedRequest, 
 });
 
 api.patch('/questions/:id', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
-  const question = db.questionById(req.params.id);
+  const question = myQuestion(req, req.params.id);
   if (!question) return res.status(404).json({ error: 'Question not found' });
   // Merge first, then validate *and write* the same object — otherwise a partial
   // body such as `{points: 5}` validates against the merged question but writes
@@ -869,6 +1023,7 @@ api.patch('/questions/:id', authenticate, requireRole('admin'), (req: AuthedRequ
 });
 
 api.delete('/questions/:id', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+  if (!myQuestion(req, req.params.id)) return res.status(404).json({ error: 'Question not found' });
   const idx = store.questions.findIndex((q) => q.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Question not found' });
   const inUse = store.exams.some((e) => e.questionIds.includes(req.params.id));
@@ -897,7 +1052,7 @@ api.post('/questions/bulk-delete', authenticate, requireRole('admin'), (req: Aut
   const deleted: string[] = [];
   const skipped: { id: string; reason: string }[] = [];
   for (const id of ids) {
-    const idx = store.questions.findIndex((q) => q.id === id);
+    const idx = myQuestion(req, id) ? store.questions.findIndex((q) => q.id === id) : -1;
     if (idx === -1) {
       skipped.push({ id, reason: 'not found' });
       continue;
@@ -944,7 +1099,7 @@ api.post('/questions/bulk-update', authenticate, requireRole('admin'), (req: Aut
   const updated: Question[] = [];
   const failed: { id: string; error: string }[] = [];
   for (const id of ids) {
-    const question = db.questionById(id);
+    const question = myQuestion(req, id);
     if (!question) {
       failed.push({ id, error: 'Question not found' });
       continue;
@@ -1064,7 +1219,8 @@ function importPaper(args: ImportArgs):
   };
   store.papers.push(paper);
   persist('papers', asPersistable(paper));
-  emitAllStaff('paper:imported', {
+  // Only the uploader hears about their own import.
+  emitUser(args.user.id, 'paper:imported', {
     paperId: paper.id,
     name: paper.name,
     questions: questions.length
@@ -1153,28 +1309,32 @@ api.post('/papers/text', authenticate, requireRole('admin'), (req: AuthedRequest
   return res.status(201).json({ paper: result.paper, questions: result.questions });
 });
 
-api.get('/papers', authenticate, requireRole('admin'), (_req: AuthedRequest, res) => {
+api.get('/papers', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
   res.json({
-    papers: db.papers().map((paper) => ({
-      ...paper,
-      questionCount: paper.questionIds.length,
-      examTitle: paper.examId ? db.examById(paper.examId)?.title ?? null : null
-    }))
+    papers: db
+      .papers()
+      .filter((paper) => isMine(req, paper.uploadedBy))
+      .map((paper) => ({
+        ...paper,
+        questionCount: paper.questionIds.length,
+        examTitle: paper.examId ? db.examById(paper.examId)?.title ?? null : null
+      }))
   });
 });
 
 api.get('/papers/:id', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
-  const paper = db.paperById(req.params.id);
+  const paper = myPaper(req, req.params.id);
   if (!paper) return res.status(404).json({ error: 'Paper not found' });
   const questions = db.questionsByPaper(paper.id);
   res.json({
     paper: { ...paper, questionCount: questions.length },
     questions,
-    exam: paper.examId ? db.examById(paper.examId) ?? null : null
+    exam: paper.examId ? myExam(req, paper.examId) ?? null : null
   });
 });
 
 api.delete('/papers/:id', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+  if (!myPaper(req, req.params.id)) return res.status(404).json({ error: 'Paper not found' });
   const idx = store.papers.findIndex((p) => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Paper not found' });
   const paper = store.papers[idx];
@@ -1192,19 +1352,19 @@ api.delete('/papers/:id', authenticate, requireRole('admin'), (req: AuthedReques
 });
 
 api.post('/papers/:id/exam', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
-  const paper = db.paperById(req.params.id);
+  const paper = myPaper(req, req.params.id);
   if (!paper) return res.status(404).json({ error: 'Paper not found' });
   const questions = db.questionsByPaper(paper.id);
   if (!questions.length) return res.status(400).json({ error: 'This paper has no questions to publish' });
 
-  const existing = paper.examId ? db.examById(paper.examId) : null;
+  const existing = paper.examId ? myExam(req, paper.examId) : null;
   if (existing) return res.json({ exam: existing, created: false });
 
   const exam: Exam = {
     id: uid('exm_'),
     code: examCode(),
-    title: String(req.body?.title ?? paper.name).trim() || paper.name,
-    subject: String(req.body?.subject ?? paper.meta.title ?? 'Imported paper').trim(),
+    title: String(req.body?.title ?? paper.name).replace(/\s+/g, ' ').trim().slice(0, 120) || paper.name,
+    subject: String(req.body?.subject ?? paper.meta.title ?? 'Imported paper').replace(/\s+/g, ' ').trim().slice(0, 120),
     adminId: req.user!.id,
     adminName: req.user!.name,
     status: 'draft',
@@ -1220,10 +1380,12 @@ api.post('/papers/:id/exam', authenticate, requireRole('admin'), (req: AuthedReq
 });
 
 // ── Admin: exams ──────────────────────────────────────────────
-api.get('/exams', authenticate, requireRole('admin'), (_req: AuthedRequest, res) => {
+api.get('/exams', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+  const exams = myExams(req);
+  const byExam = responsesByExamIds(new Set(exams.map((exam) => exam.id)));
   res.json({
-    exams: db.exams().map((exam) => {
-      const rows = store.responses.filter((r) => r.examId === exam.id);
+    exams: exams.map((exam) => {
+      const rows = byExam.get(exam.id) ?? [];
       const participation = new Set(rows.map((r) => r.studentId)).size;
       return {
         ...exam,
@@ -1247,7 +1409,7 @@ function removeExams(ids: string[], req: AuthedRequest) {
   const deleted: DeletedExamSummary[] = [];
   const missing: string[] = [];
   for (const id of ids) {
-    const exam = db.examById(id);
+    const exam = myExam(req, id);
     if (!exam) {
       missing.push(id);
       continue;
@@ -1284,14 +1446,15 @@ api.delete('/exams/:id', authenticate, requireRole('admin'), (req: AuthedRequest
 api.post('/exams', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
   const { title, subject, questionIds } = req.body ?? {};
   if (!title || !String(title).trim()) return res.status(400).json({ error: 'Exam title is required' });
-  const ids: string[] = Array.isArray(questionIds) ? questionIds.filter((id: string) => !!db.questionById(id)) : [];
+  // Only the faculty member's own questions can go into their session.
+  const ids: string[] = (idList(questionIds) ?? []).filter((id) => !!myQuestion(req, id));
   if (ids.length === 0) return res.status(400).json({ error: 'Select at least one question' });
 
   const exam: Exam = {
     id: uid('exm_'),
     code: examCode(),
-    title: String(title).trim(),
-    subject: String(subject ?? 'General').trim() || 'General',
+    title: String(title).replace(/\s+/g, ' ').trim().slice(0, 120),
+    subject: String(subject ?? 'General').replace(/\s+/g, ' ').trim().slice(0, 120) || 'General',
     adminId: req.user!.id,
     adminName: req.user!.name,
     status: 'draft',
@@ -1314,7 +1477,7 @@ api.post('/exams', authenticate, requireRole('admin'), (req: AuthedRequest, res)
  * changes, and booleans must really be booleans.
  */
 api.patch('/exams/:id', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   const body = (req.body ?? {}) as Record<string, unknown>;
 
@@ -1349,7 +1512,7 @@ api.patch('/exams/:id', authenticate, requireRole('admin'), asyncRoute(async (re
 }));
 
 api.get('/exams/:id', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   const all = store.responses
     .filter((r) => r.examId === exam.id)
@@ -1361,26 +1524,30 @@ api.get('/exams/:id', authenticate, requireRole('admin'), (req: AuthedRequest, r
   const outstanding = all.filter(
     (r) => !recentIds.has(r.id) && (r.grade === 'pending' || r.ai?.status === 'failed' || r.ai?.needsReview)
   );
+  const questionById = new Map(store.questions.filter((q) => exam.questionIds.includes(q.id)).map((q) => [q.id, q]));
   res.json({
     exam,
     counts: { responses: all.length, students: new Set(all.map((r) => r.studentId)).size },
-    questions: exam.questionIds.map((id) => db.questionById(id)).filter(Boolean),
+    questions: exam.questionIds.map((id) => questionById.get(id)).filter(Boolean),
     active: activeWindow(exam),
     set: setMonitor(exam),
     settings: examSettings(exam),
     leaderboard: getLeaderboard(exam.id),
     grading: gradingStatus(),
-    responses: [...recent, ...outstanding].map((r) => ({
-      ...r,
-      questionPrompt: db.questionById(r.questionId)?.prompt ?? '',
-      questionType: db.questionById(r.questionId)?.type ?? 'mcq',
-      maxPoints: db.questionById(r.questionId)?.points ?? 0
-    }))
+    responses: [...recent, ...outstanding].map((r) => {
+      const question = questionById.get(r.questionId) ?? db.questionById(r.questionId);
+      return {
+        ...r,
+        questionPrompt: question?.prompt ?? '',
+        questionType: question?.type ?? 'mcq',
+        maxPoints: question?.points ?? 0
+      };
+    })
   });
 });
 
 api.post('/exams/:id/push', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   const { questionId, timerSeconds } = req.body ?? {};
   // A non-numeric override would reach the engine as NaN, which makes `endsAt`
@@ -1401,13 +1568,13 @@ api.post('/exams/:id/push', authenticate, requireRole('admin'), asyncRoute(async
 }));
 
 api.post('/exams/:id/questions', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   if (exam.status === 'ended') return res.status(409).json({ error: 'This session has ended' });
   // Accepts one id (`questionId`) or many (`questionIds`) — the bank's bulk
   // "add to session" sends a list.
   const ids = idList(req.body?.questionIds) ?? [String(req.body?.questionId ?? '')];
-  const missing = ids.filter((id) => !db.questionById(id));
+  const missing = ids.filter((id) => !myQuestion(req, id));
   if (ids.length === 0 || missing.length === ids.length) return res.status(404).json({ error: 'Question not found' });
   let added = 0;
   for (const id of ids) {
@@ -1428,7 +1595,7 @@ api.post('/exams/:id/questions', authenticate, requireRole('admin'), (req: Authe
  * stays — removing it would orphan responses or pull it from under students.
  */
 api.post('/exams/:id/questions/remove', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   const ids = idList(req.body?.questionIds);
   if (!ids || ids.length === 0) return res.status(400).json({ error: 'Select at least one question' });
@@ -1460,7 +1627,7 @@ api.post('/exams/:id/questions/remove', authenticate, requireRole('admin'), asyn
  * one shared timer). Students see the list and start each timer themselves.
  */
 api.post('/exams/:id/push-set', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   const body = (req.body ?? {}) as Record<string, unknown>;
   if (!Array.isArray(body.items) || body.items.length === 0) {
@@ -1504,7 +1671,7 @@ api.post('/exams/:id/push-set', authenticate, requireRole('admin'), asyncRoute(a
 }));
 
 api.post('/exams/:id/set/close', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   const result = await closeSet(exam);
   if (!result.ok) return res.status(409).json({ error: result.error });
@@ -1512,7 +1679,7 @@ api.post('/exams/:id/set/close', authenticate, requireRole('admin'), asyncRoute(
 }));
 
 api.post('/exams/:id/set/repush', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   const questionId = String(req.body?.questionId ?? '');
   let timerSeconds: number | undefined;
@@ -1532,14 +1699,14 @@ api.post('/exams/:id/set/repush', authenticate, requireRole('admin'), asyncRoute
 }));
 
 api.post('/exams/:id/lock', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   lockQuestion(exam);
   res.json({ ok: true, active: activeWindow(exam) });
 });
 
 api.post('/exams/:id/end', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   endExam(exam);
   let classroom: Awaited<ReturnType<typeof publishExamResults>> | { status: 'failed'; error: string } | undefined;
@@ -1561,7 +1728,7 @@ api.post('/exams/:id/end', authenticate, requireRole('admin'), asyncRoute(async 
 }));
 
 api.get('/exams/:id/analytics', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   const key = cacheKeys.analytics(exam.id);
   const cached = await cache.get(key);
@@ -1571,13 +1738,13 @@ api.get('/exams/:id/analytics', authenticate, requireRole('admin'), asyncRoute(a
 }));
 
 api.get('/exams/:id/leaderboard', authenticate, requireRole('admin'), asyncRoute(async (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   res.json({ leaderboard: getLeaderboard(exam.id) });
 }));
 
 api.post('/responses/:id/grade', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
-  const response = db.responseById(req.params.id);
+  const response = myResponse(req, req.params.id);
   if (!response) return res.status(404).json({ error: 'Response not found' });
   // Garbage here used to become NaN and poison every leaderboard total; the
   // upper bound is the question's own worth, not an arbitrary 999.
@@ -1639,7 +1806,7 @@ api.post(
 
     let question: Question | undefined;
     if (req.body?.questionId) {
-      question = db.questionById(String(req.body.questionId));
+      question = myQuestion(req, req.body.questionId);
       if (!question) return res.status(404).json({ error: 'Question not found' });
     } else if (req.body?.question && typeof req.body.question === 'object') {
       const draft = req.body.question as Partial<QuestionInput>;
@@ -1687,7 +1854,7 @@ api.post(
 
 /** (Re-)run AI evaluation for one stored response. The result arrives over the socket. */
 api.post('/responses/:id/ai-grade', authenticate, requireRole('admin'), aiActionLimiter, (req: AuthedRequest, res) => {
-  const response = db.responseById(req.params.id);
+  const response = myResponse(req, req.params.id);
   if (!response) return res.status(404).json({ error: 'Response not found' });
   const result = requestAiEvaluation(response);
   if (!result.ok) return res.status(result.status).json({ error: result.error });
@@ -1703,7 +1870,7 @@ api.post('/responses/:id/ai-grade', authenticate, requireRole('admin'), aiAction
 
 /** Queue AI evaluation for every pending (or every non-manual) subjective response in a session. */
 api.post('/exams/:id/ai-grade', authenticate, requireRole('admin'), aiBulkLimiter, (req: AuthedRequest, res) => {
-  const exam = db.examById(req.params.id);
+  const exam = myExam(req);
   if (!exam) return res.status(404).json({ error: 'Exam not found' });
   if (!aiGradingEnabled()) {
     return res.status(503).json({ error: 'AI grading is not configured on this server (set GEMINI_API_KEY).' });
@@ -1721,10 +1888,32 @@ api.post('/exams/:id/ai-grade', authenticate, requireRole('admin'), aiBulkLimite
 });
 
 // ── Student ───────────────────────────────────────────────────
-api.get('/student/exams', authenticate, requireRole('student'), (_req: AuthedRequest, res) => {
+/**
+ * Exam codes are the key to a session, so guessing them must be slow. A real
+ * student types a code a few times at most; 30 tries a minute stops anyone
+ * from walking the code space.
+ */
+const joinLimiter = createRateLimiter({
+  name: 'student-join',
+  windowMs: 60_000,
+  max: 30,
+  keyFor: (req) => (req as AuthedRequest).user?.id ?? clientIp(req),
+  message: 'Too many exam codes tried. Wait a minute and check the code with your teacher.'
+});
+
+/**
+ * The lobby lists only sessions this student has opened with a code (or has
+ * answered in), never every session on the platform. Parikshio serves many
+ * institutes; one school's students must not see another's exams.
+ */
+api.get('/student/exams', authenticate, requireRole('student'), (req: AuthedRequest, res) => {
+  const me = req.user!.id;
+  const touched = new Set<string>();
+  for (const r of store.responses) if (r.studentId === me) touched.add(r.examId);
+  for (const a of store.attempts) if (a.studentId === me) touched.add(a.examId);
   const exams = db
     .exams()
-    .filter((e) => e.status !== 'draft')
+    .filter((e) => e.status !== 'draft' && (touched.has(e.id) || e.joinedBy?.includes(me)))
     .map((e) => ({
       id: e.id,
       code: e.code,
@@ -1740,11 +1929,12 @@ api.get('/student/exams', authenticate, requireRole('student'), (_req: AuthedReq
   res.json({ exams });
 });
 
-api.post('/student/join', authenticate, requireRole('student'), (req: AuthedRequest, res) => {
-  const code = String(req.body?.code ?? '').trim();
+api.post('/student/join', authenticate, requireRole('student'), joinLimiter, (req: AuthedRequest, res) => {
+  const code = String(req.body?.code ?? '').trim().slice(0, 16);
   const exam = db.examByCode(code);
   if (!exam) return res.status(404).json({ error: 'No exam found with that code' });
   if (exam.status === 'draft') return res.status(409).json({ error: 'This exam has not started yet' });
+  noteStudentJoin(exam, req.user!.id);
   res.json({ exam: buildExamPublic(exam, req.user!.id) });
 });
 
@@ -1757,9 +1947,10 @@ api.get('/student/exams/:id', authenticate, requireRole('student'), (req: Authed
   });
 });
 
-api.get('/student/exams/by-code/:code', authenticate, requireRole('student'), (req: AuthedRequest, res) => {
-  const exam = db.examByCode(req.params.code);
+api.get('/student/exams/by-code/:code', authenticate, requireRole('student'), joinLimiter, (req: AuthedRequest, res) => {
+  const exam = db.examByCode(String(req.params.code ?? '').slice(0, 16));
   if (!exam) return res.status(404).json({ error: 'No exam found with that code' });
+  if (exam.status !== 'draft') noteStudentJoin(exam, req.user!.id);
   res.json({ exam: buildExamPublic(exam, req.user!.id) });
 });
 
@@ -1812,7 +2003,7 @@ api.post('/student/answers', authenticate, requireRole('student'), asyncRoute(as
   });
 }));
 
-api.get('/student/history', authenticate, requireRole('student'), (req: AuthedRequest, res) => {
+api.get('/student/history', authenticate, requireRole('student'), asyncRoute(async (req: AuthedRequest, res) => {
   const rows = db.responsesByStudent(req.user!.id);
   const grouped = new Map<string, typeof rows>();
   rows.forEach((r) => {
@@ -1820,14 +2011,17 @@ api.get('/student/history', authenticate, requireRole('student'), (req: AuthedRe
     list.push(r);
     grouped.set(r.examId, list);
   });
-  const history = [...grouped.entries()].map(([examId, list]) => {
+  const pointsOf = new Map(store.questions.map((q) => [q.id, q.points]));
+  // The lobby polls this every few seconds for every student: leaderboards come
+  // from the shared short-lived cache instead of being re-ranked per request.
+  const history = await Promise.all([...grouped.entries()].map(async ([examId, list]) => {
     const exam = db.examById(examId);
     // A grade that is still sealed for the class must not leak through the lobby.
     const visible = list.filter((r) => !exam || !resultSealed(exam, r.questionId));
     const points = visible.reduce((a, b) => a + b.awarded, 0);
-    const maxPoints = list.reduce((a, b) => a + (db.questionById(b.questionId)?.points ?? 0), 0);
+    const maxPoints = list.reduce((a, b) => a + (pointsOf.get(b.questionId) ?? 0), 0);
     const showRank = !exam || studentsSeeLeaderboard(exam);
-    const board = showRank ? getLeaderboard(examId) : [];
+    const board = showRank ? await cachedLeaderboard(examId) : [];
     const me = board.find((b) => b.studentId === req.user!.id);
     return {
       examId,
@@ -1844,9 +2038,9 @@ api.get('/student/history', authenticate, requireRole('student'), (req: AuthedRe
       avgLatencyMs: list.length ? Math.round(list.reduce((a, b) => a + b.latencyMs, 0) / list.length) : 0,
       lastAt: list.reduce((acc, r) => Math.max(acc, r.submittedAt), 0)
     };
-  });
+  }));
   res.json({ history: history.sort((a, b) => b.lastAt - a.lastAt) });
-});
+}));
 
 /**
  * Personal strengths: accuracy by question format and by topic, plus the
@@ -1866,15 +2060,18 @@ api.get('/student/insights', authenticate, requireRole('student'), (req: AuthedR
     return { answered: list.length, correct, accuracy: list.length ? Math.round((correct / list.length) * 100) : 0 };
   };
 
+  const questionOf = new Map(store.questions.map((q) => [q.id, q]));
   const byType = QUESTION_TYPES.map((type) => ({
     type,
-    ...summarise(graded.filter((r) => db.questionById(r.questionId)?.type === type))
+    ...summarise(graded.filter((r) => questionOf.get(r.questionId)?.type === type))
   })).filter((row) => row.answered > 0);
 
   const topics = new Map<string, typeof graded>();
   graded.forEach((r) => {
-    const topic = db.questionById(r.questionId)?.topic || 'General';
-    topics.set(topic, [...(topics.get(topic) ?? []), r]);
+    const topic = questionOf.get(r.questionId)?.topic || 'General';
+    const list = topics.get(topic);
+    if (list) list.push(r);
+    else topics.set(topic, [r]);
   });
   const byTopic = [...topics.entries()]
     .map(([topic, list]) => ({ topic, ...summarise(list) }))
@@ -1936,7 +2133,7 @@ api.post('/contact', contactIpLimiter, contactEmailLimiter, asyncRoute(async (re
 
   const name = sanitiseName(body.name, '').slice(0, CONTACT_LIMITS.name);
   const email = sanitiseEmail(body.email);
-  const org = sanitiseName(body.org, '').slice(0, CONTACT_LIMITS.org);
+  const org = cleanOrg(body.org);
   const message = String(body.message ?? '')
     .replace(/\r\n?/g, '\n')
     // Strip control characters other than newlines and tabs.
@@ -1950,6 +2147,8 @@ api.post('/contact', contactIpLimiter, contactEmailLimiter, asyncRoute(async (re
   if (!EMAIL_RE.test(email) || email.length > CONTACT_LIMITS.email) {
     return res.status(400).json({ error: 'Enter a valid email address so we can reply' });
   }
+  const contactOrgIssue = orgProblem(org);
+  if (contactOrgIssue) return res.status(400).json({ error: contactOrgIssue });
   if (message.length < CONTACT_LIMITS.messageMin) {
     return res.status(400).json({ error: `Please write at least ${CONTACT_LIMITS.messageMin} characters` });
   }

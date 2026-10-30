@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
-import { parseAuthRole, safeNext } from '@/lib/nextPath';
-import { LoginClient } from './LoginClient';
+import { Suspense } from 'react';
+import { LoginClient, LoginFromQuery } from './LoginClient';
 
 export const metadata: Metadata = {
   title: 'Log in',
@@ -9,13 +9,14 @@ export const metadata: Metadata = {
 };
 
 /**
- * The tab (`?role=faculty`) and the post-sign-in destination (`?next=`) are
- * read on the server so the right tab is in the first paint, with no flash.
+ * A static page, served from the CDN closest to the visitor. The tab
+ * (`?role=faculty`) and the post-sign-in destination (`?next=`) are read in the
+ * browser; until then the student tab (the common case) is shown.
  */
-export default function LoginPage({
-  searchParams
-}: {
-  searchParams: { [key: string]: string | string[] | undefined };
-}) {
-  return <LoginClient initialRole={parseAuthRole(searchParams.role)} next={safeNext(searchParams.next)} />;
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginClient initialRole="student" next={null} />}>
+      <LoginFromQuery />
+    </Suspense>
+  );
 }

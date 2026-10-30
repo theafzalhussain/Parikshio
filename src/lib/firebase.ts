@@ -8,6 +8,7 @@ import {
   signOut,
   type Auth
 } from 'firebase/auth';
+import { GoogleSignInError, firebaseConfig, firebaseConfigured } from './firebaseConfig';
 
 /**
  * Firebase is used for one thing only: the Google sign-in popup.
@@ -20,20 +21,6 @@ import {
  * Every value below is a public client identifier (that is how Firebase web
  * apps work); the real protection is the server-side token verification.
  */
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? '',
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? '',
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? '',
-  // Not required by Firebase Auth, but keeping it in sync with the console
-  // config avoids surprises if another Firebase product is added later.
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID ?? ''
-};
-
-/** True when the three NEXT_PUBLIC_FIREBASE_* values are present in .env. */
-export const firebaseConfigured = Boolean(
-  firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId
-);
-
 let app: FirebaseApp | null = null;
 
 function getFirebaseApp(): FirebaseApp {
@@ -74,17 +61,6 @@ function describe(code: string, fallback: string): string {
       return 'The Firebase API key in .env is invalid.';
     default:
       return fallback;
-  }
-}
-
-export class GoogleSignInError extends Error {
-  code: string;
-  /** Cancellations are expected — the UI stays silent for these. */
-  cancelled: boolean;
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-    this.cancelled = code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request';
   }
 }
 

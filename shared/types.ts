@@ -236,6 +236,12 @@ export interface Exam {
   classroomPublishStatus?: 'published' | 'failed';
   classroomPublishError?: string;
   classroomPublishedAt?: number;
+  /**
+   * Students who have opened this session with its code. The student lobby
+   * lists only these sessions, so nobody sees (or can join from a list)
+   * another institute's exams. Absent on sessions created before it existed.
+   */
+  joinedBy?: string[];
 }
 
 /** Student-facing view of an exam */

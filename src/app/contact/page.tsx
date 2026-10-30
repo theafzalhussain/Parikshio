@@ -1,10 +1,10 @@
 import type { Metadata } from 'next';
 import { Building2, Mail, Timer } from 'lucide-react';
-import { ContactForm } from '@/components/site/ContactForm';
+import { Suspense } from 'react';
+import { ContactForm, ContactFormFromQuery } from '@/components/site/ContactForm';
 import { MailLink } from '@/components/site/MailLink';
 import { PublicPage } from '@/components/site/PublicPage';
 import { SocialLinks } from '@/components/site/SocialIcons';
-import { isContactTopic } from '@shared/contact';
 
 export const metadata: Metadata = {
   title: 'Contact & feedback',
@@ -35,14 +35,8 @@ function InfoCard({
   );
 }
 
-/** `?topic=feedback` (and the other topic keys) preselects what the message is about. */
-export default function ContactPage({
-  searchParams
-}: {
-  searchParams: { [key: string]: string | string[] | undefined };
-}) {
-  const raw = Array.isArray(searchParams.topic) ? searchParams.topic[0] : searchParams.topic;
-  const topic = isContactTopic(raw) ? raw : 'general';
+/** Static page; `?topic=feedback` (and the other topic keys) is read in the browser to preselect the topic. */
+export default function ContactPage() {
 
   return (
     <PublicPage contactBand={false}>
@@ -59,7 +53,9 @@ export default function ContactPage({
         </div>
 
         <div className="mt-12 grid items-start gap-8 lg:grid-cols-[1.3fr_0.7fr] [&>*]:min-w-0">
-          <ContactForm initialTopic={topic} />
+          <Suspense fallback={<ContactForm initialTopic="general" />}>
+            <ContactFormFromQuery />
+          </Suspense>
 
           <aside className="space-y-5" aria-label="Other ways to reach us">
             <InfoCard icon={Mail} title="Email us">
