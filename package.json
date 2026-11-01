@@ -13,6 +13,7 @@
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "clsx": "^2.1.1",
+    "cross-env": "^10.1.0",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "firebase": "13.1.0",
@@ -22,7 +23,7 @@
     "mammoth": "^1.8.0",
     "mongoose": "^8.6.1",
     "multer": "^1.4.5-lts.1",
-    "next": "14.2.15",
+    "next": "15.5.28",
     "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^4.6.82",
     "react": "^18.3.1",
@@ -30,7 +31,6 @@
     "socket.io": "^4.7.5",
     "socket.io-client": "^4.7.5",
     "tesseract.js": "^5.1.0",
-    "cross-env": "^10.1.0",
     "tsx": "^4.16.5"
   },
   "devDependencies": {

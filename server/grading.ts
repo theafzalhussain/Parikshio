@@ -1,5 +1,14 @@
 import type { AiEvaluation, Exam, GradingStatus, Question, Response } from '../shared/types';
-import { gradeAnswer, gradeForAward, isSubjective, rankResponses } from '../shared/grade';
+import {
+  gradeAnswer,
+  gradeForAward,
+  hasDevanagari,
+  isSubjective,
+  rankResponses,
+  requiredAnswerWords,
+  substanceCap
+} from '../shared/grade';
+import { cachedTranslation, translateAnswerToEnglish, translationEnabled } from './translate';
 import { config } from './config';
 import { cache, cacheKeys } from './cache';
 import { persist } from './mongo';
@@ -36,7 +45,10 @@ import {
  *     before it (and an explicit AI re-run wins over an older override).
  *   • Busy / rate-limited models are waited out, not counted as failures.
  *   • If AI really cannot grade an answer, it is left for human review rather
- *     than being marked wrong; an exact key match still earns its marks.
+ *     than being marked wrong; a key match still earns its marks (up to the
+ *     answer-length cap).
+ *   • Short / long answers below their word floor never keep full marks,
+ *     whichever engine scored them (`substanceCap` in shared/grade.ts).
  */
 
 /** Wait this long after the first answer so the rest of the class joins the batch. */
@@ -98,13 +110,91 @@ export function gradingStatus(): GradingStatus {
 }
 
 function evaluationContext(question: Question): EvaluationContext {
+  // Students may have read the Hindi version: the grader sees exactly that wording too.
+  const hindi = cachedTranslation(question, 'hi');
   return {
     type: question.type === 'long' ? 'long' : 'short',
     prompt: question.prompt,
     topic: question.topic,
     maxPoints: Number.isFinite(question.points) && question.points > 0 ? question.points : 1,
     referenceAnswers: question.acceptedAnswers,
-    explanation: question.explanation ?? ''
+    explanation: question.explanation ?? '',
+    minWords: requiredAnswerWords(question),
+    ...(hindi ? { translatedPrompt: hindi.prompt } : {})
+  };
+}
+
+// ── Hindi answers to key-graded questions ─────────────────────
+/**
+ * A Hindi answer to a question graded by an English key ("हाइब्रिड" for
+ * "hybrid") needs translating before it can be matched. Answers the AI grades
+ * do not: the evaluator reads Hindi directly.
+ */
+export function needsAnswerTranslation(question: Question, answer: string, keyGrade: Response['grade']): boolean {
+  return (
+    translationEnabled() &&
+    (question.type === 'fill' || question.type === 'short') &&
+    question.acceptedAnswers.length > 0 &&
+    keyGrade !== 'correct' &&
+    hasDevanagari(answer)
+  );
+}
+
+/**
+ * Translates a Hindi answer to English, then grades it against the key. Runs
+ * after the receipt went out (the response starts as pending). When DeepL is
+ * unavailable the answer waits for a teacher instead of being marked wrong.
+ */
+export async function gradeTranslatedAnswer(response: Response): Promise<void> {
+  const question = db.questionById(response.questionId);
+  if (!question || !stillStored(response)) return;
+  try {
+    const english = await translateAnswerToEnglish(response.answer, question);
+    if (!stillStored(response)) return;
+    response.answerTranslation = { lang: 'hi', text: english, provider: 'deepl', translatedAt: Date.now() };
+    // A teacher who scored it while DeepL was working keeps their score.
+    if (response.gradedBy !== 'manual' && response.grade === 'pending') {
+      const result = gradeAnswer(question, english);
+      response.grade = result.grade;
+      response.awarded = result.awarded;
+      if (result.grade !== 'pending') {
+        response.gradedBy = 'key';
+        response.gradedAt = Date.now();
+      }
+    }
+  } catch (err) {
+    console.warn(`[translate] answer ${response.id} left for manual review: ${errorMessage(err)}`);
+  }
+  persist('responses', asPersistable(response));
+  broadcastGradeChange(response, true);
+}
+
+const MAX_FEEDBACK_CHARS = 1_400;
+const MAX_IMPROVEMENTS = 5;
+
+/**
+ * The model is told the word floor, but the server enforces it: an answer
+ * shorter than the floor never keeps full marks, whatever the model returned.
+ * The cap only ever lowers a score.
+ */
+function limitByLength(
+  question: Question,
+  answer: string,
+  result: EvaluationResult
+): { result: EvaluationResult; lengthCap?: NonNullable<AiEvaluation['lengthCap']> } {
+  const { cap, words, required } = substanceCap(question, answer);
+  if (result.score <= cap) return { result };
+  const max = result.maxPoints;
+  const note = `Score limited to ${cap}/${max}: the answer has ${words} word${words === 1 ? '' : 's'}, and full marks need at least ${required}.`;
+  return {
+    result: {
+      ...result,
+      score: cap,
+      verdict: cap >= max ? 'correct' : cap <= 0 ? 'incorrect' : 'partial',
+      feedback: `${result.feedback} ${note}`.slice(0, MAX_FEEDBACK_CHARS),
+      improvements: [...result.improvements.slice(0, MAX_IMPROVEMENTS - 1), `Develop the answer to at least ${required} words`]
+    },
+    lengthCap: { words, requiredWords: required, uncappedScore: result.score }
   };
 }
 
@@ -179,9 +269,10 @@ export function forgetAiWork(responseIds: Set<string>): void {
   }
 }
 
-function applyResult(response: Response, result: EvaluationResult, started: number): void {
+function applyResult(response: Response, raw: EvaluationResult, started: number, question: Question): void {
   if (!stillStored(response)) return;
   const ai = response.ai!;
+  const { result, lengthCap } = limitByLength(question, response.answer, raw);
   const suspicious = result.injectionSuspected || looksLikeInjection(response.answer);
   const evaluation: AiEvaluation = {
     status: 'done',
@@ -194,6 +285,7 @@ function applyResult(response: Response, result: EvaluationResult, started: numb
     improvements: result.improvements,
     confidence: result.confidence,
     needsReview: suspicious || result.confidence < config.gemini.reviewBelowConfidence,
+    ...(lengthCap ? { lengthCap } : {}),
     attempts: ai.attempts,
     requestedAt: ai.requestedAt,
     completedAt: Date.now(),
@@ -230,7 +322,7 @@ function failResponse(response: Response, message: string, model?: string): void
   // waits for a human instead of being marked wrong because the AI was down.
   const question = db.questionById(response.questionId);
   if (question && response.grade === 'pending' && response.gradedBy !== 'manual') {
-    const fallback = gradeAnswer(question, response.answer);
+    const fallback = gradeAnswer(question, response.answerTranslation?.text ?? response.answer);
     if (fallback.grade === 'correct') {
       response.grade = 'correct';
       response.awarded = fallback.awarded;
@@ -354,7 +446,7 @@ async function runBatch(batch: Response[]): Promise<void> {
     const skipped: Response[] = [];
     for (const response of batch) {
       const result = outcome.results.get(response.id);
-      if (result) applyResult(response, result, started);
+      if (result) applyResult(response, result, started, question);
       else skipped.push(response);
     }
     // The model occasionally drops an item from a long batch — retry just those.
@@ -457,16 +549,20 @@ export function queueExamAiEvaluations(exam: Exam, scope: BulkScope): { queued: 
 }
 
 /** Dry-run evaluation — nothing is stored. Powers the "test the grader" endpoint. */
-export async function previewEvaluation(question: Question, answer: string): Promise<EvaluationResult & { needsReview: boolean }> {
+export async function previewEvaluation(
+  question: Question,
+  answer: string
+): Promise<EvaluationResult & { needsReview: boolean; lengthCap?: AiEvaluation['lengthCap'] }> {
   const wait = modelWaitMs();
   if (wait === Infinity) throw new GeminiError(quotaMessage(), 'quota');
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(wait, 15_000)));
-  const result = await evaluateAnswer({ ...evaluationContext(question), answer });
+  const { result, lengthCap } = limitByLength(question, answer, await evaluateAnswer({ ...evaluationContext(question), answer }));
   const suspicious = result.injectionSuspected || looksLikeInjection(answer);
   return {
     ...result,
     injectionSuspected: suspicious,
-    needsReview: suspicious || result.confidence < config.gemini.reviewBelowConfidence
+    needsReview: suspicious || result.confidence < config.gemini.reviewBelowConfidence,
+    ...(lengthCap ? { lengthCap } : {})
   };
 }
 

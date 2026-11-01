@@ -12,6 +12,7 @@ import { GroupLabel, Input, Label, SegmentedControl } from '@/components/ui/Fiel
 import { Loading, StatusPill, TypePill } from '@/components/ui/Pills';
 import { useToast } from '@/components/ui/Toast';
 import { api, ApiError, cx } from '@/lib/api';
+import { classroomResultMessage } from '@/lib/classroom';
 import type { AdminExamRow, Question } from '@shared/types';
 
 const iconButton =
@@ -53,6 +54,19 @@ export default function ExamsPage() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Google sends a failed Classroom connection back here (the exam it started from may be unknown).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get('classroom');
+    if (!result) return;
+    const message = classroomResultMessage(result, params.get('reason'));
+    if (message) push(message);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('classroom');
+    url.searchParams.delete('reason');
+    window.history.replaceState({}, '', url);
+  }, [push]);
 
   function toggle(id: string) {
     setPicked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));

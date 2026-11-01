@@ -25,9 +25,11 @@ import { Button, IconButton, LinkButton } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Field';
 import { Loading, StatusPill, TypePill, typeLabel } from '@/components/ui/Pills';
 import { QuestionEditModal } from '@/components/QuestionEditModal';
+import { KeyStatusBadge, answerRowLabel, emptyAnswerHint } from '@/components/KeyStatus';
 import { useToast } from '@/components/ui/Toast';
 import { api, ApiError, cx, fmtRelative } from '@/lib/api';
-import type { Exam, Paper, Question } from '@shared/types';
+import { answerKeyStatus, requiredAnswerWords } from '@shared/grade';
+import type { Exam, GradingStatus, Paper, Question } from '@shared/types';
 
 interface Detail {
   paper: Paper & { questionCount: number };
@@ -50,6 +52,13 @@ export default function PaperWorkbenchPage() {
   const [bulkTimer, setBulkTimer] = useState(45);
   const [applying, setApplying] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [aiOn, setAiOn] = useState(false);
+
+  useEffect(() => {
+    api<{ grading: GradingStatus }>('/grading/status')
+      .then((res) => setAiOn(res.grading.ai.enabled))
+      .catch(() => setAiOn(false));
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -86,20 +95,10 @@ export default function PaperWorkbenchPage() {
     setTimers((prev) => ({ ...prev, [question.id]: clamped }));
     if (clamped === question.timerSeconds) return;
     try {
+      // Only the timer: re-sending the whole question would be refused while its key is still missing.
       const res = await api<{ question: Question }>(`/questions/${question.id}`, {
         method: 'PATCH',
-        body: {
-          type: question.type,
-          prompt: question.prompt,
-          topic: question.topic,
-          difficulty: question.difficulty,
-          options: question.options,
-          correctOptionIndex: question.correctOptionIndex,
-          acceptedAnswers: question.acceptedAnswers,
-          points: question.points,
-          timerSeconds: clamped,
-          explanation: question.explanation
-        }
+        body: { timerSeconds: clamped }
       });
       setDetail((prev) =>
         prev ? { ...prev, questions: prev.questions.map((q) => (q.id === question.id ? res.question : q)) } : prev
@@ -178,9 +177,11 @@ export default function PaperWorkbenchPage() {
   }
 
   const paper = detail?.paper;
-  const missingKeys = questions.filter(
-    (q) => (q.type === 'mcq' || q.type === 'truefalse') && q.correctOptionIndex === null
-  ).length;
+  const statuses = questions.map((q) => answerKeyStatus(q, aiOn));
+  const missingKeys = statuses.filter((s) => s === 'missing').length;
+  const keyed = statuses.filter((s) => s === 'ready').length;
+  const aiMarked = statuses.filter((s) => s === 'ai').length;
+  const totalMarks = questions.reduce((total, q) => total + (Number.isFinite(q.points) ? q.points : 0), 0);
 
   return (
     <AdminShell
@@ -237,11 +238,19 @@ export default function PaperWorkbenchPage() {
           {/* summary */}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {[
-              { k: 'Questions extracted', v: paper.questionCount, hint: `${paper.stats.withOptions} with options` },
               {
-                k: 'Answer keys found',
-                v: `${paper.stats.withAnswers}/${paper.questionCount}`,
-                hint: missingKeys ? `${missingKeys} to review` : 'all matched'
+                k: 'Questions extracted',
+                v: paper.questionCount,
+                hint: `${paper.stats.withOptions} with options · ${totalMarks} marks${paper.meta.maxMarks ? ` (paper says ${paper.meta.maxMarks})` : ''}`
+              },
+              {
+                k: 'Answer keys',
+                v: `${keyed}/${questions.length}`,
+                hint: missingKeys
+                  ? `${missingKeys} need a key${aiMarked ? ` · ${aiMarked} AI-graded` : ''}`
+                  : aiMarked
+                    ? `all set · ${aiMarked} AI-graded without a model answer`
+                    : 'all set'
               },
               {
                 k: 'Parse confidence',
@@ -321,7 +330,8 @@ export default function PaperWorkbenchPage() {
           ) : (
             <div className="space-y-2.5">
               {filtered.map((q, index) => {
-                const needsReview = (q.type === 'mcq' || q.type === 'truefalse') && q.correctOptionIndex === null;
+                const status = answerKeyStatus(q, aiOn);
+                const minWords = q.type === 'short' || q.type === 'long' ? requiredAnswerWords(q) : 0;
                 return (
                   <Panel key={q.id} hover className="p-4">
                     <div className="flex flex-wrap items-start gap-3">
@@ -334,15 +344,15 @@ export default function PaperWorkbenchPage() {
                           <TypePill type={q.type} />
                           <Badge tone="neutral">{typeLabel(q.type)}</Badge>
                           <span className="num text-[12px] text-white/50">{q.points} pts</span>
-                          {needsReview ? (
-                            <Badge tone="amber">
-                              <AlertTriangle className="h-3 w-3" /> key missing
-                            </Badge>
-                          ) : (
-                            <Badge tone="mint">
-                              <Check className="h-3 w-3" /> ready
-                            </Badge>
+                          {minWords > 0 && (
+                            <span
+                              className="num text-[12px] text-white/50"
+                              title="Answers shorter than this cannot earn full marks"
+                            >
+                              · full marks ≥ {minWords} words
+                            </span>
                           )}
+                          <KeyStatusBadge status={status} />
                         </div>
 
                         <p className="break-words text-[14.5px] leading-relaxed text-white/85">{q.prompt}</p>
@@ -369,10 +379,10 @@ export default function PaperWorkbenchPage() {
 
                         {q.type !== 'mcq' && q.type !== 'truefalse' && (
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                            <span className="text-[11px] uppercase tracking-[0.12em] text-white/40">accepted</span>
+                            <span className="text-[11px] uppercase tracking-[0.12em] text-white/40">{answerRowLabel(q.type)}</span>
                             {q.acceptedAnswers.length === 0 ? (
-                              <span className="text-[12.5px] text-amber-300/80">
-                                {q.type === 'long' ? 'manual review' : 'no key — add one to auto-grade'}
+                              <span className={cx('text-[12.5px]', status === 'missing' ? 'text-amber-300/80' : 'text-white/50')}>
+                                {emptyAnswerHint(q.type, status)}
                               </span>
                             ) : (
                               q.acceptedAnswers.map((a) => (

@@ -138,6 +138,13 @@ function resolveOfflineSyncGraceMs(): number {
 
 export const config = {
   port,
+  /**
+   * `API_ONLY=1`: serve only the API and its websocket, for a host that sits
+   * behind a separate frontend (Render behind Vercel). Page requests are sent
+   * to APP_URL instead of being rendered here, which saves the Next.js page
+   * server's boot time and memory on every cold start.
+   */
+  apiOnly: /^(1|true|yes|on)$/i.test((process.env.API_ONLY ?? '').trim()),
   jwtSecret: resolveJwtSecret(),
   /** How long a login stays valid. Accepts any `jsonwebtoken` duration string. */
   sessionTtl: (process.env.SESSION_TTL ?? '12h').trim() || '12h',
@@ -173,6 +180,10 @@ export const config = {
       return this.clientId.length > 0 && this.clientSecret.length > 0;
     },
     get redirectUri() {
+      // Split hosting can point Google straight at the API host instead of
+      // relying on the Vercel rewrite of /api/classroom/oauth/callback.
+      const override = (process.env.GOOGLE_CLASSROOM_REDIRECT_URI ?? '').replace(/[\u200B-\u200D\u2060\uFEFF\u202A-\u202E]/g, '').trim();
+      if (override) return override;
       const base = resolveAppBaseUrl() || `http://localhost:${port}`;
       return `${base}/api/classroom/oauth/callback`;
     }
@@ -251,6 +262,24 @@ export const config = {
     debug: (process.env.AI_GRADING_DEBUG ?? '').trim().toLowerCase() === 'true',
     get enabled() {
       return this.apiKey.length > 0 && this.models.length > 0;
+    }
+  },
+  /**
+   * DeepL — Hindi translation of questions in the student portal, and of Hindi
+   * answers before they are matched against an English answer key.
+   * Enabled only when DEEPL_API_KEY is set. Free keys end in ":fx" and use the
+   * api-free host. The key never leaves the server.
+   */
+  deepl: {
+    apiKey: (process.env.DEEPL_API_KEY ?? '').trim(),
+    get apiUrl() {
+      const override = (process.env.DEEPL_API_URL ?? '').trim().replace(/\/+$/, '');
+      if (override) return override;
+      return this.apiKey.endsWith(':fx') ? 'https://api-free.deepl.com' : 'https://api.deepl.com';
+    },
+    timeoutMs: positiveInt(process.env.DEEPL_TIMEOUT_MS, 12_000),
+    get enabled() {
+      return this.apiKey.length > 0;
     }
   }
 };

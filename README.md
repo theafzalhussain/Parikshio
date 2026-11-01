@@ -137,19 +137,42 @@ analyse workflow:
 **Admin → Question papers** (`/admin/papers`)
 
 1. **Drop a file** — `.pdf`, `.docx`, `.png/.jpg` (scans/photos, OCR runs automatically), `.txt/.md`, or use the **Paste text** tab. Max 20 MB.
-2. The server reads the text, then the parser detects:
-   * numbered questions (`1.` / `1)` / `Q1.` / `Q.1`), multi-line prompts and wrapped sentences
-   * options on separate lines (`A) … B) …`) **or** inline (`A) x B) y C) z`), plus roman numerals
-   * **marks** (`[4 marks]`, `(4)`, `4 marks`) → question points, and a timer estimate from type + marks (editable)
-   * **blanks** (`______`) → fill-in-the-blank, `true/false` wording → true/false, `derive/explain` + marks → long answer
-   * **answer keys** — inline `Ans: B` **or** one global `Answer Key: 1-B, 2-C, 3-True, 4-HAVING` block
-3. Every question is imported into your panel with `sourcePaperId`, `sourcePaperName` and `sourceIndex` (paper order), plus a **confidence** score and parser notes.
+2. The server reads the text, then the parser (`server/extract.ts`) detects:
+   * numbered questions (`1.` / `1)` / `Q1` / `Q.1` / `Question 1:`), multi-line prompts and wrapped sentences; numbering may restart in each section
+   * **section headings and instructions**: `SECTION B - Short Answer Questions (2 marks each)`, `II. FILL IN THE BLANKS (5 × 1 = 5)`, `Questions 1 to 10 carry 1 mark each`, CBSE-style `Section A has 20 MCQs carrying 1 mark each` (numbered general instructions are not mistaken for questions). A heading sets the format and the marks of every question under it
+   * **format**: options → MCQ (two options True/False → True/False); `true or false` / `T/F` / `state whether…` → True/False; `____` / `.....` → fill in the blank; otherwise the section heading, then the marks (≤ 3 short, ≥ 5 long) and wording (`derive`, `discuss`, `explain in detail`…) decide Short vs Long
+   * **options** on separate lines or inline: `A)` `(a)` `a.` `[a]` `(1)` `(i)`. `(i)/(ii)` statements above lettered options stay in the prompt; `(a) Define… [2] (b) Explain… [3]` parts stay in the prompt as sub-parts, not options
+   * **marks** → points: `[2 marks]`, `(2 Marks)`, `(2M)`, `[Marks: 2]`, `(2)`, `(2+3)`, `(5×2=10)`, `… 3 marks`, `½ mark`, a right-hand marks column. Priority: the question's own marks → sum of its sub-parts → instructions → section heading → default (1 objective / 2 short / 5 long, flagged in the warnings). Half marks are allowed
+   * **answer keys**: inline `Ans: B` (multi-line for written answers), `(Ans: Golgi body)`, a ✓ or `*` after an option, or an `Answer Key` block (`1-B, 2-C, 3-True`, also split per section). MCQ keys map by letter, number, roman numeral or option text; True/False keys accept `T`/`F`/`True`/`False`/`(a)`; fill keys split `Golgi apparatus / Golgi body` into alternatives
+   * **word floors** for Short / Long answers: a printed limit (`in about 50 words`, `30-50 words`) or, without one, a floor derived from the marks (see *Answer substance* below)
+3. Every question is imported into your panel with `sourcePaperId`, `sourcePaperName` and `sourceIndex` (paper order). Paper warnings list missing keys, defaulted marks and a total that does not match the paper's maximum marks.
 4. Open the **paper workbench**: all questions of that paper in order, each with **timer field · Push · Edit · Delete**, a **bulk timer** applier, "key missing" warnings and a **Publish session** button that creates one exam containing the whole paper.
 5. Push any question straight from the paper, the workbench or the question bank — the target session is picked in the push dialog and the timer can be overridden per push.
 
 Try it with the seeded paper *"Unit Test 2 — Cell Biology"* (7 questions, keys merged) or the **Load example** button on the Paste-text tab.
 
-**Parsing tips that make extraction near-perfect:** number every question, keep each option on its own line, put marks in brackets, and keep the key either after each question or in one `Answer Key:` block at the end.
+**Parsing tips that make extraction near-perfect:** number every question, keep each option on its own line, put marks in brackets, and keep the key either after each question or in one `Answer Key:` block at the end. A paper without any answer key imports fine, but every MCQ / True-False / fill-in question then shows **key missing** until you set its answer with **Edit** (Short / Long answers show **AI grades** when AI grading is on). Page headers and footers (`… Page 2 of 5`, `END OF QUESTION PAPER`) are dropped, and `Attempt any FIVE of six` choices are allowed for when the total is compared with the paper's maximum marks.
+
+### Answer substance (Short / Long)
+
+A correct keyword is not a full answer to a multi-mark question. Every Short / Long question has a **minimum word count for full marks** (`minAnswerWords`, editable in the question editor; empty = automatic):
+
+* a word limit printed on the question or its section wins (`about 50 words` → 35, `30-50 words` → 30, `not more than 100 words` → 50)
+* otherwise it follows the marks: short = 5 + 10 per extra mark (2 marks → 15 words), long = 15 per mark (5 marks → 75); calculations need fewer words; 1-mark short answers, "Name / Which / Expand…" prompts and one-to-three-word model answers have no floor
+
+Below the floor an answer can still earn partial credit, but never full marks: the cap grows with the words written and stays half a mark short of full (`substanceCap` in `shared/grade.ts`). The cap applies to answer-key matches and to AI scores (the AI is told the floor, and the server enforces it on whatever the model returns, noting it in the feedback). Students see the floor and a live word counter under the answer box. Manual grades are never capped.
+
+### Hindi questions and answers (DeepL)
+
+Set `DEEPL_API_KEY` (server-side only; free keys ending in `:fx` use the free endpoint automatically). Students then get an **English | हिंदी** switch above every open question, live or self-paced:
+
+* `POST /api/student/translate { examId, questionId, lang: "hi" }` translates only what that student can already see (`visibleQuestionParts` mirrors their exam view, so nothing hidden leaks; self-paced options stay hidden until the timer starts). Rate limited per student.
+* Each question is translated **once** and cached on the question (`translations.hi`, keyed by a hash of the English text, so an edit re-translates). Simultaneous requests share one DeepL call.
+* Exam accuracy: blanks, keyboard shortcuts (`Ctrl + Shift + R`), function keys, acronyms (CPU, RAM), logic operators (AND / OR / NOT), formulas (`=MAX(A1:A5)`), file extensions and codes (`2F`) are kept exactly as written; the question travels as DeepL `context`; True / False use the fixed terms सत्य / असत्य. The English original always stays visible under the Hindi.
+* Answers stay option indexes or the student's own text, and **grading always uses the English question and key**:
+  * MCQ / True-False: unaffected by the translation.
+  * Fill / Short graded by key: a Devanagari answer that does not match directly is translated to English (with the question as context) and matched against the key; the original answer is kept and the teacher sees the translation in the control room. If DeepL is unavailable the answer waits for a teacher instead of being marked wrong. Devanagari digits (२५६) match ASCII digits.
+  * AI-graded Short / Long: Gemini reads Hindi, Hinglish or mixed answers directly, sees the Hindi wording the student read, never deducts for language, and treats the English question as authoritative so a translation slip cannot cost marks.
 
 ### Paper endpoints
 
@@ -280,6 +303,9 @@ to `main`; no deploy command or manual upload is needed.
 | `JWT_SECRET` · `MONGODB_URI` · `REDIS_URL` | session signing key and backing stores |
 | `GEMINI_API_KEY` | AI grading; leave unset to fall back to answer-key / manual review |
 | `GOOGLE_CLASSROOM_CLIENT_ID` · `GOOGLE_CLASSROOM_CLIENT_SECRET` | keep the secret on Render only |
+| `GOOGLE_CLASSROOM_REDIRECT_URI` | optional; the OAuth callback Google calls (default `APP_URL` + `/api/classroom/oauth/callback`) |
+| `DEEPL_API_KEY` | Hindi translation in the student portal; leave unset to hide the Hindi switch |
+| `API_ONLY` | optional; `1` serves only the API (faster cold starts behind a Vercel frontend) |
 | `FIREBASE_PROJECT_ID`, `BREVO_*`, `SESSION_TTL` | Google sign-in verification, reset and contact email, session lifetime. `BREVO_SENDER_EMAIL` must be a verified sender in Brevo, or on a domain authenticated in Brevo; otherwise Brevo accepts the request and then drops the email ("sender … is not valid") |
 | `CONTACT_INBOX_EMAIL` | optional; where contact-form messages are emailed (default `support@parikshio.tech`) |
 | `OWNER_EMAILS` | optional; comma-separated addresses that may open the owner console at `/hq` (default `support@parikshio.tech`; `off` turns the console off) |
@@ -293,9 +319,11 @@ to `main`; no deploy command or manual upload is needed.
 
 Never put a server secret (`JWT_SECRET`, `MONGODB_URI`, `REDIS_URL`, `GEMINI_API_KEY`, `BREVO_API_KEY`, `GOOGLE_CLASSROOM_CLIENT_SECRET`) in the Vercel project: the UI never reads them.
 
-`NEXT_PUBLIC_*` values are inlined at build time, so adding or changing one only takes effect after a fresh deploy. Also authorise each deployed origin for sign-in: Firebase console → Authentication → Settings → Authorized domains, and register `https://<render-host>/api/classroom/oauth/callback` as an OAuth redirect URI in Google Cloud.
+`NEXT_PUBLIC_*` values are inlined at build time, so adding or changing one only takes effect after a fresh deploy. Also authorise each deployed origin for sign-in: Firebase console → Authentication → Settings → Authorized domains.
 
-* For Google Classroom in split hosting, keep `APP_URL` on Render equal to the Render backend URL and register `https://<render-host>/api/classroom/oauth/callback` in Google Cloud. Keep `GOOGLE_CLASSROOM_CLIENT_SECRET` on Render only.
+* For Google Classroom in split hosting, keep `APP_URL` on Render equal to the **public site** (`https://www.parikshio.tech`): reset links and the return from Google's consent screen go there. Register `https://www.parikshio.tech/api/classroom/oauth/callback` in Google Cloud; the Vercel build proxies that one path to Render whenever `NEXT_PUBLIC_API_URL` is set. To let Google call Render directly instead, set `GOOGLE_CLASSROOM_REDIRECT_URI=https://<render-host>/api/classroom/oauth/callback` on Render and register that URI. The control room's Classroom panel shows the exact URI the server uses. Keep `GOOGLE_CLASSROOM_CLIENT_SECRET` on Render only. While the OAuth consent screen is in **Testing**, add each teacher as a test user; Google expires Testing refresh tokens after 7 days (the teacher then sees "access has expired, reconnect"), so publish the consent screen for long-term use.
+* `API_ONLY=1` on Render (optional, recommended for split hosting): the Render service then serves only the API and websocket and skips loading the Next.js page server at boot (app boot drops from about 1–3 s to a few milliseconds locally, more on Render's free CPU), so every cold start is quicker. Page requests that reach Render are redirected to `APP_URL`. With `API_ONLY=1` set, the Render build command can be shortened to `npm ci --include=dev`, because the API does not need `next build`.
+* On Render's free plan the service sleeps after about 15 minutes without traffic, and the first request then waits for it to start. A free uptime monitor that requests `https://<render-host>/healthz` every 10 minutes keeps it awake; the Starter plan does not sleep.
 * Public signup creates student accounts only. Faculty/admin accounts must be provisioned through a trusted operational process; the public signup and Google signup endpoints cannot grant admin access. The owner grants faculty access from the owner console (below): approving a "Faculty access" request, or **Users → Add faculty**, raises an existing account to faculty or creates one and emails a 7-day "set your password" link. No database edit or restart is needed.
 * Production does not seed demo users or sample assessments. Create the first faculty account from the owner console (**Users → Add faculty**).
 * Offline answers are stored on the device and sync when connectivity returns, but production accepts them only while the question is open (plus the existing short in-flight grace); client-reported answer times are never trusted for scoring.

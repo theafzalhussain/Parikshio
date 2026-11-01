@@ -28,6 +28,7 @@ import { RadialTimer } from '@/components/charts/Charts';
 import { Leaderboard } from '@/components/Leaderboard';
 import { OfflineQueuePanel } from '@/components/OfflineQueuePanel';
 import { AnswerInput, ShortcutHint } from '@/components/student/AnswerInput';
+import { LanguageToggle, QuestionPrompt, useQuestionTranslation, useStudentLanguage } from '@/components/student/QuestionLanguage';
 import { MobileTimerBar } from '@/components/student/MobileTimerBar';
 import { ReviewList, describeAnswer } from '@/components/student/ReviewList';
 import { SetRunner } from '@/components/student/SetRunner';
@@ -228,6 +229,11 @@ export default function StudentExamPage() {
   );
   /** Already committed, one way or another — the inputs must stay locked. */
   const committed = answered || !!queued;
+
+  // Hindi reading aid: one remembered choice, one cached translation per question.
+  const [lang, setLang] = useStudentLanguage();
+  const translationOn = lang === 'hi' && exam?.translationAvailable === true;
+  const hindi = useQuestionTranslation(exam?.id, question?.id, translationOn && !!question);
 
   // A reconnect is the moment to both drain the outbox and re-read the room:
   // questions may have been pushed and locked while this device was dark.
@@ -751,18 +757,21 @@ export default function StudentExamPage() {
                   <span className="text-[13px] text-white/60">{typeLabel(question!.type)}</span>
                   <span className="num text-[13px] text-white/50">· {question!.points} pts</span>
                 </div>
-                {/* Phones read the time from the pinned bar above. */}
-                <div className="hidden items-center gap-2 lg:flex">
-                  <span
-                    className={cx(
-                      'num text-[17px] font-semibold',
-                      urgent ? 'text-ember-300' : 'text-white'
-                    )}
-                  >
-                    {expired ? '0:00' : fmtClock(remaining)}
-                  </span>
-                  <Timer className={cx('h-4 w-4', urgent ? 'text-ember-300' : 'text-white/45')} />
-                  {synced && <span className="text-[10.5px] uppercase tracking-[0.14em] text-white/45">server</span>}
+                <div className="flex items-center gap-3">
+                  {exam.translationAvailable && <LanguageToggle lang={lang} onChange={setLang} loading={hindi.loading} />}
+                  {/* Phones read the time from the pinned bar above. */}
+                  <div className="hidden items-center gap-2 lg:flex">
+                    <span
+                      className={cx(
+                        'num text-[17px] font-semibold',
+                        urgent ? 'text-ember-300' : 'text-white'
+                      )}
+                    >
+                      {expired ? '0:00' : fmtClock(remaining)}
+                    </span>
+                    <Timer className={cx('h-4 w-4', urgent ? 'text-ember-300' : 'text-white/45')} />
+                    {synced && <span className="text-[10.5px] uppercase tracking-[0.14em] text-white/45">server</span>}
+                  </div>
                 </div>
               </div>
 
@@ -771,9 +780,7 @@ export default function StudentExamPage() {
                   <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gold-400/[0.1] font-display text-[16px] font-medium text-gold-200 ring-1 ring-inset ring-gold-300/25">
                     {active.index}
                   </span>
-                  <h2 className="font-display text-[19px] font-normal leading-[1.5] text-white sm:text-[22px]">
-                    {question!.prompt}
-                  </h2>
+                  <QuestionPrompt prompt={question!.prompt} translation={hindi.translation} error={hindi.error} />
                 </div>
 
                 {/* answer inputs */}
@@ -784,6 +791,8 @@ export default function StudentExamPage() {
                     onDraft={setDraft}
                     disabled={committed || expired}
                     onSubmitShortcut={() => void submit()}
+                    translatedOptions={hindi.translation?.options ?? null}
+                    hindi={!!hindi.translation}
                   />
                   {!committed && !expired && <ShortcutHint type={question!.type} />}
                 </div>

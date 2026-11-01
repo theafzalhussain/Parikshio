@@ -25,6 +25,7 @@ import {
   sanitizeQuestion,
   setMonitor,
   skipSetQuestion,
+  visibleQuestionParts,
   SET_MAX_ITEMS,
   type DeletedExamSummary
 } from './engine';
@@ -39,6 +40,7 @@ import {
 } from './grading';
 import { GeminiError } from './gemini';
 import {
+  ClassroomError,
   classroomStatus,
   createClassroomAuthorizationUrl,
   discardClassroomAuthorization,
@@ -49,7 +51,7 @@ import {
   listClassroomRoster,
   publishExamResults
 } from './googleClassroom';
-import { isSubjective } from '../shared/grade';
+import { answerKeyStatus, isSubjective } from '../shared/grade';
 import {
   authenticate,
   burnPasswordCheck,
@@ -67,6 +69,7 @@ import { verifyFirebaseIdToken } from './firebase';
 import { sendContactConfirmation, sendContactNotification, sendPasswordResetEmail, emailEnabled } from './email';
 import { contactReference, shouldSendContactCopy } from './contactRules';
 import { config, isProd } from './config';
+import { questionTranslation, TranslateError } from './translate';
 import {
   clientIp,
   clearLoginPenalties,
@@ -229,6 +232,39 @@ const classroomLimiter = createRateLimiter({
   message: 'Too many Google Classroom requests — wait a minute and try again.'
 });
 
+/** Could not reach Google at all (DNS, connection reset, timeout). */
+function isNetworkFailure(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name ?? '';
+  return name === 'TimeoutError' || name === 'AbortError' || (error instanceof TypeError && /fetch failed/i.test(error.message));
+}
+
+/** What a teacher is told when a Classroom call fails, and with which status. */
+function classroomFailure(error: unknown): { status: number; error: string; code: string } | null {
+  if (error instanceof ClassroomError) return { status: error.status, error: error.message, code: error.code };
+  if (isNetworkFailure(error)) {
+    return { status: 504, error: 'Google Classroom did not answer in time. Try again in a minute.', code: 'classroom/unreachable' };
+  }
+  return null;
+}
+
+/**
+ * Classroom routes answer with the reason a call failed ("connect first",
+ * "access expired — reconnect", "enable the Classroom API") instead of the
+ * generic 500, which hid exactly the message the teacher needed.
+ */
+function classroomRoute(handler: (req: AuthedRequest, res: ExpressResponse) => Promise<unknown>): RequestHandler {
+  return asyncRoute(async (req, res, next) => {
+    try {
+      await handler(req, res);
+    } catch (error) {
+      const failure = classroomFailure(error);
+      if (!failure || res.headersSent) return next(error);
+      if (failure.status >= 500) console.warn(`[classroom] ${req.method} ${req.path}: ${failure.error}`);
+      res.status(failure.status).json({ error: failure.error, code: failure.code });
+    }
+  });
+}
+
 api.post('/auth/login', loginIpGuard, loginEmailGuard, asyncRoute(async (req, res) => {
   const email = sanitiseEmail(req.body?.email);
   const password = String(req.body?.password ?? '');
@@ -362,9 +398,18 @@ api.get('/classroom/oauth/callback', asyncRoute(async (req: AuthedRequest, res) 
     const base = config.appBaseUrl || `http://localhost:${config.port}`;
     return res.redirect(`${base}${pending.returnTo}?classroom=connected`);
   } catch (error) {
-    console.warn('[classroom] OAuth callback failed:', error instanceof Error ? error.message : 'unknown error');
+    const reason = error instanceof Error ? error.message : 'unknown error';
+    console.warn('[classroom] OAuth callback failed:', reason);
     const base = config.appBaseUrl || `http://localhost:${config.port}`;
-    return res.redirect(`${base}/admin/exams?classroom=error`);
+    // The reason is a short fixed code, never Google's raw text, so nothing can be injected into the page.
+    const code = /expired|already used/i.test(reason)
+      ? 'expired'
+      : /refresh token/i.test(reason)
+        ? 'no-refresh-token'
+        : /redirect/i.test(reason)
+          ? 'redirect'
+          : 'failed';
+    return res.redirect(`${base}/admin/exams?classroom=error&reason=${code}`);
   }
 }));
 
@@ -375,13 +420,13 @@ api.post('/classroom/disconnect', authenticate, requireRole('admin'), (req: Auth
   res.json({ classroom: classroomStatus(user) });
 });
 
-api.get('/classroom/courses', authenticate, requireRole('admin'), classroomLimiter, asyncRoute(async (req: AuthedRequest, res) => {
+api.get('/classroom/courses', authenticate, requireRole('admin'), classroomLimiter, classroomRoute(async (req: AuthedRequest, res) => {
   const user = db.userById(req.user!.id);
   if (!user) return res.status(401).json({ error: 'Faculty account is no longer available.' });
   res.json({ courses: await listClassroomCourses(user) });
 }));
 
-api.post('/exams/:id/classroom/course', authenticate, requireRole('admin'), classroomLimiter, asyncRoute(async (req: AuthedRequest, res) => {
+api.post('/exams/:id/classroom/course', authenticate, requireRole('admin'), classroomLimiter, classroomRoute(async (req: AuthedRequest, res) => {
   const exam = db.examById(req.params.id);
   if (!exam || exam.adminId !== req.user!.id) return res.status(404).json({ error: 'Exam not found.' });
   if (exam.classroomCourseWorkId) {
@@ -402,7 +447,7 @@ api.post('/exams/:id/classroom/course', authenticate, requireRole('admin'), clas
   res.json({ exam });
 }));
 
-api.post('/exams/:id/classroom/sync-roster', authenticate, requireRole('admin'), classroomLimiter, asyncRoute(async (req: AuthedRequest, res) => {
+api.post('/exams/:id/classroom/sync-roster', authenticate, requireRole('admin'), classroomLimiter, classroomRoute(async (req: AuthedRequest, res) => {
   const exam = db.examById(req.params.id);
   if (!exam || exam.adminId !== req.user!.id) return res.status(404).json({ error: 'Exam not found.' });
   if (!exam.classroomCourseId) return res.status(409).json({ error: 'Link a Google Classroom course to this exam first.' });
@@ -436,11 +481,13 @@ api.post('/exams/:id/classroom/publish-results', authenticate, requireRole('admi
     persist('exams', asPersistable(exam));
     res.json({ classroom: result, exam });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Could not publish Google Classroom results.';
+    const failure = classroomFailure(error);
+    if (!failure) console.error('[classroom] publish failed:', error);
+    const message = failure?.error ?? 'Could not publish Google Classroom results.';
     exam.classroomPublishStatus = 'failed';
     exam.classroomPublishError = message.slice(0, 500);
     persist('exams', asPersistable(exam));
-    res.status(502).json({ error: message, classroom: { status: 'failed' } });
+    res.status(failure?.status ?? 502).json({ error: message, code: failure?.code ?? 'classroom/failed', classroom: { status: 'failed' } });
   }
 }));
 
@@ -905,6 +952,13 @@ function intOrNull(value: unknown): number | null {
   return Number.isInteger(n) ? n : null;
 }
 
+/** Marks come in quarter steps (¼, ½, ¾ mark questions are common), never NaN. */
+function halfOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && Number.isInteger(Math.round(n * 1e6) / 1e6 * 4) ? n : null;
+}
+
 const MAX_PROMPT_CHARS = 10_000;
 const MAX_OPTIONS = 26;
 const MAX_ACCEPTED = 50;
@@ -912,8 +966,16 @@ const MAX_ANSWER_CHARS = 1_000;
 const MAX_POINTS = 1_000;
 const MIN_TIMER_SECONDS = 5;
 const MAX_TIMER_SECONDS = 3_600;
+const MAX_MIN_ANSWER_WORDS = 2_000;
 
-function validateQuestion(input: Partial<QuestionInput>): string | null {
+/**
+ * `allowMissingKey` lets an edit that does not touch the answer key (timer,
+ * points, topic…) go through on a question imported without one. The key
+ * stays missing instead of the edit being refused, or a True/False key being
+ * silently set to "True".
+ */
+function validateQuestion(input: Partial<QuestionInput>, options: { allowMissingKey?: boolean } = {}): string | null {
+  const allowMissingKey = options.allowMissingKey === true;
   if (!input.prompt || !String(input.prompt).trim()) return 'Question prompt is required';
   if (String(input.prompt).length > MAX_PROMPT_CHARS)
     return `Question prompt must be under ${MAX_PROMPT_CHARS} characters`;
@@ -925,17 +987,22 @@ function validateQuestion(input: Partial<QuestionInput>): string | null {
     if (options.length > MAX_OPTIONS) return `Multiple choice allows at most ${MAX_OPTIONS} options`;
     if (options.some((o) => String(o).length > MAX_ANSWER_CHARS))
       return `Each option must be under ${MAX_ANSWER_CHARS} characters`;
-    if (input.correctOptionIndex === null || input.correctOptionIndex === undefined)
-      return 'Select the correct option';
+    const keyMissing = input.correctOptionIndex === null || input.correctOptionIndex === undefined;
+    if (keyMissing && !allowMissingKey) return 'Select the correct option';
     // A non-integer or out-of-range index leaves the question with no reachable
     // correct answer, so every student would silently score zero.
-    const idx = intOrNull(input.correctOptionIndex);
-    if (idx === null || idx < 0 || idx >= options.length) return 'Correct option is out of range';
+    if (!keyMissing) {
+      const idx = intOrNull(input.correctOptionIndex);
+      if (idx === null || idx < 0 || idx >= options.length) return 'Correct option is out of range';
+    }
   }
 
   if (input.type === 'truefalse') {
-    const idx = intOrNull(input.correctOptionIndex ?? 0);
-    if (idx === null || (idx !== 0 && idx !== 1)) return 'Pick either True or False as the answer';
+    const keyMissing = input.correctOptionIndex === null || input.correctOptionIndex === undefined;
+    if (!(keyMissing && allowMissingKey)) {
+      const idx = intOrNull(input.correctOptionIndex ?? 0);
+      if (idx === null || (idx !== 0 && idx !== 1)) return 'Pick either True or False as the answer';
+    }
   }
 
   if (['fill', 'short', 'long'].includes(input.type)) {
@@ -943,18 +1010,25 @@ function validateQuestion(input: Partial<QuestionInput>): string | null {
     // Fill-in-the-blank is always key-graded. Short answers can be scored by the
     // AI evaluator without a key, but need one when AI is off (or nothing would
     // ever grade them automatically).
-    if (input.type === 'fill' && accepted.length === 0)
+    if (input.type === 'fill' && accepted.length === 0 && !allowMissingKey)
       return 'Add at least one accepted answer for auto-grading';
-    if (input.type === 'short' && accepted.length === 0 && !aiGradingEnabled())
+    if (input.type === 'short' && accepted.length === 0 && !aiGradingEnabled() && !allowMissingKey)
       return 'Add at least one accepted answer (or enable AI grading with GEMINI_API_KEY)';
     if (accepted.length > MAX_ACCEPTED) return `At most ${MAX_ACCEPTED} accepted answers`;
     if (accepted.some((a) => String(a).length > MAX_ANSWER_CHARS))
       return `Each accepted answer must be under ${MAX_ANSWER_CHARS} characters`;
   }
 
-  const points = intOrNull(input.points);
-  if (points === null || points <= 0) return 'Points must be a whole number greater than zero';
+  const points = halfOrNull(input.points);
+  if (points === null || points <= 0) return 'Points must be greater than zero, in steps of 0.25 (e.g. 0.75, 1, 2.5)';
   if (points > MAX_POINTS) return `Points must be ${MAX_POINTS} or fewer`;
+
+  // Optional word floor for full marks on short / long answers (empty = automatic).
+  if (isSubjective(input.type) && input.minAnswerWords !== undefined && input.minAnswerWords !== null && String(input.minAnswerWords) !== '') {
+    const words = intOrNull(input.minAnswerWords);
+    if (words === null || words < 0 || words > MAX_MIN_ANSWER_WORDS)
+      return `Minimum words must be a whole number from 0 to ${MAX_MIN_ANSWER_WORDS}`;
+  }
 
   const timer = intOrNull(input.timerSeconds);
   if (timer === null || timer < MIN_TIMER_SECONDS)
@@ -968,7 +1042,8 @@ function validateQuestion(input: Partial<QuestionInput>): string | null {
  * Builds the stored shape from already-validated input. Both create and update
  * go through this, so a `PATCH` can never write a field the validator did not see.
  */
-function questionFieldsFrom(input: QuestionInput) {
+function questionFieldsFrom(input: QuestionInput, options: { allowMissingKey?: boolean } = {}) {
+  const keyMissing = input.correctOptionIndex === null || input.correctOptionIndex === undefined;
   return {
     type: input.type,
     prompt: String(input.prompt).trim(),
@@ -981,15 +1056,37 @@ function questionFieldsFrom(input: QuestionInput) {
           ? (input.options ?? []).map((o) => String(o).trim()).filter(Boolean)
           : [],
     correctOptionIndex:
-      input.type === 'mcq' || input.type === 'truefalse' ? Number(input.correctOptionIndex ?? 0) : null,
+      input.type === 'mcq' || input.type === 'truefalse'
+        ? keyMissing && options.allowMissingKey
+          ? null
+          : Number(input.correctOptionIndex ?? 0)
+        : null,
     acceptedAnswers:
       input.type === 'mcq' || input.type === 'truefalse'
         ? []
         : (input.acceptedAnswers ?? []).map((a) => String(a).trim()).filter(Boolean),
     points: Number(input.points),
     timerSeconds: Number(input.timerSeconds),
-    explanation: String(input.explanation ?? '').slice(0, MAX_PROMPT_CHARS)
+    explanation: String(input.explanation ?? '').slice(0, MAX_PROMPT_CHARS),
+    // `undefined` (removed from the stored document) means "derive it from the marks".
+    minAnswerWords:
+      isSubjective(input.type) &&
+      input.minAnswerWords !== undefined &&
+      input.minAnswerWords !== null &&
+      String(input.minAnswerWords) !== ''
+        ? Number(input.minAnswerWords)
+        : undefined
   };
+}
+
+/**
+ * An edit keeps a missing answer key missing when the question has none yet
+ * and the edit does not set one (it only changes the timer, points, topic…).
+ */
+function keepsMissingKey(question: Question, body: unknown): boolean {
+  const fields = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+  const touchesKey = ['type', 'options', 'correctOptionIndex', 'acceptedAnswers'].some((k) => k in fields);
+  return !touchesKey && answerKeyStatus(question, aiGradingEnabled()) === 'missing';
 }
 
 api.post('/questions', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
@@ -1015,9 +1112,10 @@ api.patch('/questions/:id', authenticate, requireRole('admin'), (req: AuthedRequ
   // body such as `{points: 5}` validates against the merged question but writes
   // `undefined` over the prompt, options and answer key.
   const merged = { ...question, ...(req.body as QuestionInput) } as QuestionInput;
-  const error = validateQuestion(merged);
+  const keyRule = { allowMissingKey: keepsMissingKey(question, req.body) };
+  const error = validateQuestion(merged, keyRule);
   if (error) return res.status(400).json({ error });
-  Object.assign(question, questionFieldsFrom(merged));
+  Object.assign(question, questionFieldsFrom(merged, keyRule));
   persist('questions', asPersistable(question));
   res.json({ question });
 });
@@ -1105,12 +1203,13 @@ api.post('/questions/bulk-update', authenticate, requireRole('admin'), (req: Aut
       continue;
     }
     const merged = { ...question, ...patch } as QuestionInput;
-    const error = validateQuestion(merged);
+    const keyRule = { allowMissingKey: keepsMissingKey(question, patch) };
+    const error = validateQuestion(merged, keyRule);
     if (error) {
       failed.push({ id, error });
       continue;
     }
-    Object.assign(question, questionFieldsFrom(merged));
+    Object.assign(question, questionFieldsFrom(merged, keyRule));
     persist('questions', asPersistable(question));
     updated.push(question);
   }
@@ -1189,7 +1288,8 @@ function importPaper(args: ImportArgs):
     acceptedAnswers: q.acceptedAnswers,
     points: q.points,
     timerSeconds: q.timerSeconds,
-    explanation: q.notes.filter((n) => n.startsWith('Expected answer')).join(' ').replace('Expected answer: ', '') || '',
+    explanation: q.explanation,
+    ...(isSubjective(q.type) ? { minAnswerWords: q.minAnswerWords } : {}),
     createdBy: args.user.id,
     createdAt: Date.now(),
     sourcePaperId: paperId,
@@ -1310,13 +1410,20 @@ api.post('/papers/text', authenticate, requireRole('admin'), (req: AuthedRequest
 });
 
 api.get('/papers', authenticate, requireRole('admin'), (req: AuthedRequest, res) => {
+  // Counted from the questions that still exist: deleting questions from the
+  // bank does not shrink `paper.questionIds`, so the list used to keep showing
+  // the original number while the paper itself showed none.
+  const remaining = new Map<string, number>();
+  for (const question of store.questions) {
+    if (question.sourcePaperId) remaining.set(question.sourcePaperId, (remaining.get(question.sourcePaperId) ?? 0) + 1);
+  }
   res.json({
     papers: db
       .papers()
       .filter((paper) => isMine(req, paper.uploadedBy))
       .map((paper) => ({
         ...paper,
-        questionCount: paper.questionIds.length,
+        questionCount: remaining.get(paper.id) ?? 0,
         examTitle: paper.examId ? db.examById(paper.examId)?.title ?? null : null
       }))
   });
@@ -1640,6 +1747,12 @@ api.post('/exams/:id/push-set', authenticate, requireRole('admin'), asyncRoute(a
   for (const raw of body.items as Record<string, unknown>[]) {
     const questionId = String(raw?.questionId ?? '');
     if (!questionId) return res.status(400).json({ error: 'Every item needs a questionId' });
+    // Only this faculty member's questions (or ones already in the session) can
+    // be pushed. Any other id would copy another teacher's question, answer key
+    // included, into this session's control room.
+    if (!myQuestion(req, questionId) && !exam.questionIds.includes(questionId)) {
+      return res.status(404).json({ error: 'Question not found' });
+    }
     let timerSeconds: number | undefined;
     if (raw.timerSeconds !== undefined && raw.timerSeconds !== null && raw.timerSeconds !== '') {
       const seconds = intOrNull(raw.timerSeconds);
@@ -1717,7 +1830,9 @@ api.post('/exams/:id/end', authenticate, requireRole('admin'), asyncRoute(async 
       exam.classroomPublishError = undefined;
       exam.classroomPublishedAt = classroom.publishedAt;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not publish Google Classroom results.';
+      const failure = classroomFailure(error);
+      if (!failure) console.error('[classroom] publish on end failed:', error);
+      const message = failure?.error ?? 'Could not publish Google Classroom results.';
       classroom = { status: 'failed', error: message };
       exam.classroomPublishStatus = 'failed';
       exam.classroomPublishError = message.slice(0, 500);
@@ -1810,10 +1925,11 @@ api.post(
       if (!question) return res.status(404).json({ error: 'Question not found' });
     } else if (req.body?.question && typeof req.body.question === 'object') {
       const draft = req.body.question as Partial<QuestionInput>;
-      const points = intOrNull(draft.points);
+      const points = halfOrNull(draft.points);
       if (!draft.prompt || !String(draft.prompt).trim()) return res.status(400).json({ error: 'Question prompt is required' });
       if (draft.type !== 'short' && draft.type !== 'long') return res.status(400).json({ error: 'Draft type must be short or long' });
-      if (points === null || points <= 0 || points > MAX_POINTS) return res.status(400).json({ error: 'Points must be a positive whole number' });
+      if (points === null || points <= 0 || points > MAX_POINTS) return res.status(400).json({ error: 'Points must be positive, in steps of 0.25' });
+      const minWords = intOrNull(draft.minAnswerWords);
       question = {
         id: 'draft',
         type: draft.type,
@@ -1829,6 +1945,7 @@ api.post(
         points,
         timerSeconds: 60,
         explanation: String(draft.explanation ?? '').slice(0, MAX_ANSWER_CHARS),
+        ...(minWords !== null && minWords >= 0 && minWords <= MAX_MIN_ANSWER_WORDS ? { minAnswerWords: minWords } : {}),
         createdBy: req.user!.id,
         createdAt: Date.now()
       };
@@ -1972,6 +2089,57 @@ api.post('/student/sets/skip', authenticate, requireRole('student'), (req: Authe
   res.json({ exam: buildExamPublic(exam, req.user!.id) });
 });
 
+/**
+ * Translates a question the student can already see into Hindi (DeepL, cached
+ * per question). Only the parts already visible are returned: in a self-paced
+ * list the options stay hidden until that student starts the question.
+ */
+const translateLimiter = createRateLimiter({
+  name: 'student-translate',
+  windowMs: 60_000,
+  max: 60,
+  keyFor: (req) => (req as AuthedRequest).user?.id ?? clientIp(req),
+  message: 'Too many translation requests. Wait a minute and try again.'
+});
+
+api.post('/student/translate', authenticate, requireRole('student'), translateLimiter, asyncRoute(async (req: AuthedRequest, res) => {
+  if (!config.deepl.enabled) {
+    return res.status(503).json({ error: 'Hindi translation is not available on this server.', code: 'translation-off' });
+  }
+  const lang = String(req.body?.lang ?? 'hi');
+  if (lang !== 'hi') return res.status(400).json({ error: 'Only Hindi is supported', code: 'bad-lang' });
+  const exam = db.examById(String(req.body?.examId ?? ''));
+  if (!exam) return res.status(404).json({ error: 'Exam not found', code: 'exam-missing' });
+  const questionId = String(req.body?.questionId ?? '');
+  const parts = visibleQuestionParts(exam, req.user!.id, questionId);
+  const question = parts ? db.questionById(questionId) : undefined;
+  // One answer for "does not exist" and "not yours to read yet", so ids cannot be probed.
+  if (!parts || !question) return res.status(404).json({ error: 'This question is not open for you', code: 'not-visible' });
+
+  try {
+    const translation = await questionTranslation(question, 'hi');
+    return res.json({
+      translation: {
+        questionId,
+        lang: 'hi',
+        prompt: translation.prompt,
+        options: parts.options && (question.type === 'mcq' || question.type === 'truefalse') ? translation.options : null
+      }
+    });
+  } catch (err) {
+    const kind = err instanceof TranslateError ? err.kind : 'unavailable';
+    console.warn(`[translate] question ${questionId}: ${(err as Error).message}`);
+    const status = kind === 'busy' ? 429 : kind === 'config' || kind === 'quota' ? 503 : 502;
+    return res.status(status).json({
+      error:
+        kind === 'quota'
+          ? 'Hindi translation has reached its monthly limit. The question is shown in English.'
+          : 'Hindi translation is unavailable right now. The question is shown in English.',
+      code: `translation-${kind}`
+    });
+  }
+}));
+
 api.post('/student/answers', authenticate, requireRole('student'), asyncRoute(async (req: AuthedRequest, res) => {
   const { examId, questionId, answer, offline } = req.body ?? {};
   const exam = db.examById(String(examId));
@@ -1987,7 +2155,7 @@ api.post('/student/answers', authenticate, requireRole('student'), asyncRoute(as
   if (!result.ok) return res.status(result.code).json({ error: result.error, code: result.reason });
   // AI evaluation internals (feedback that may paraphrase the model answer) are
   // staff-only; the student gets a receipt, not the marking.
-  const { ai: _ai, gradedBy: _gradedBy, gradedAt: _gradedAt, ...receipt } = result.response;
+  const { ai: _ai, gradedBy: _gradedBy, gradedAt: _gradedAt, answerTranslation: _translation, ...receipt } = result.response;
   // Results stay sealed while classmates can still answer the same question —
   // a live push until it locks, a set until it closes. A replayed answer for a
   // question that has since closed may show its score.

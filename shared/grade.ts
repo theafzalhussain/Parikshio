@@ -1,12 +1,27 @@
 import type { Grade, LeaderboardEntry, Question, QuestionStat, QuestionType, Response } from './types';
 
-/** Normalise a free-text answer for tolerant comparison. */
+/** Devanagari script (Hindi, Marathi, Sanskrit …). */
+const DEVANAGARI = /[\u0900-\u097F]/;
+
+/** True when the text contains Hindi (Devanagari) letters. */
+export function hasDevanagari(text: string): boolean {
+  return DEVANAGARI.test(text ?? '');
+}
+
+/**
+ * Normalise a free-text answer for tolerant comparison. Unicode-aware, so a
+ * Hindi answer keeps its letters (and vowel signs) instead of collapsing to an
+ * empty string; Devanagari digits become ASCII ("२५६" = "256").
+ */
 export function normalise(value: string): string {
   return (value ?? '')
     .toString()
+    .normalize('NFC')
     .toLowerCase()
+    .replace(/[\u0966-\u096F]/g, (d) => String(d.charCodeAt(0) - 0x0966))
     .replace(/[\u2018\u2019\u201c\u201d]/g, "'")
-    .replace(/[^a-z0-9\s.'-]/g, ' ')
+    .replace(/[\u0964\u0965]/g, ' ') // danda । ॥ (Hindi full stops)
+    .replace(/[^\p{L}\p{M}\p{N}\s.'-]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -45,6 +60,157 @@ export function isSubjective(type: QuestionType): boolean {
   return type === 'short' || type === 'long';
 }
 
+// ── Answer substance (short / long) ───────────────────────────
+/**
+ * A correct keyword is not a full answer to a 5-mark question. Every short or
+ * long answer has a word floor for full marks: answers below it can still earn
+ * partial credit, but never the full points, whichever engine (answer key or
+ * AI) scored them. The floor comes from, in order:
+ *   1. `question.minAnswerWords` (set by the paper import or by faculty; 0 = none)
+ *   2. a word limit written in the prompt ("in about 50 words", "30-50 words")
+ *   3. the marks: each mark beyond the first asks for roughly one more sentence
+ */
+const MAX_REQUIRED_WORDS = 400;
+
+/** Counts words that carry letters or digits (a lone "=" or "-" is not a word). */
+export function countWords(text: string): number {
+  return (text ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter((token) => /[\p{L}\p{N}]/u.test(token)).length;
+}
+
+/**
+ * Minimum words implied by a word limit in the text, or `null` when there is none.
+ * "30-50 words" → 30 · "at least 80 words" → 80 · "about 50 words" → 35 ·
+ * "not more than 100 words" → 50 (a cap is not a target, so half of it).
+ */
+export function wordLimitFrom(text: string): number | null {
+  const t = text ?? '';
+  const range = /(\d{2,4})\s*(?:-|–|to)\s*(\d{2,4})\s*words?\b/i.exec(t);
+  if (range && Number(range[1]) < Number(range[2])) return Number(range[1]);
+  const atLeast = /\b(?:at\s+least|minimum(?:\s+of)?|not\s+less\s+than|no\s+less\s+than)\s+(\d{2,4})\s*words?\b/i.exec(t);
+  if (atLeast) return Number(atLeast[1]);
+  const atMost =
+    /\b(?:not\s+more\s+than|not\s+exceeding|no\s+more\s+than|within|maximum(?:\s+of)?|up\s*to|less\s+than)\s+(\d{2,4})\s*words?\b/i.exec(t);
+  if (atMost) return Math.round(Number(atMost[1]) * 0.5);
+  const about = /\b(?:about|around|approximately|approx\.?|nearly|in)\s+(\d{2,4})\s*words?\b/i.exec(t);
+  if (about) return Math.round(Number(about[1]) * 0.7);
+  // "Answer in 2 to 3 lines": roughly 8 words a line, counted from the lower bound
+  const lines =
+    /\b(?:answer|write|explain|describe)\b[^.]{0,60}?\b(?:in|within)\s+(?:about\s+)?(\d{1,2})\s*(?:(?:-|–|to)\s*\d{1,2}\s*)?lines?\b/i.exec(t);
+  if (lines) return Math.max(1, Number(lines[1])) * 8;
+  return null;
+}
+
+/** Prompts that ask for a name, a term or a value rather than an explanation. */
+const BRIEF_CUE =
+  /^(?:name|which|who|whom|when|where|expand|identify|spell|how\s+many|in\s+which|write\s+the\s+(?:full\s+form|name|formula|symbol|unit|chemical\s+formula)|give\s+(?:one|the|a)\s+(?:word|name|term|example)|what\s+is\s+the\s+(?:s\.?i\.?\s+)?unit|state\s+the\s+(?:value|unit|number|name)|mention\s+(?:one|the\s+name))\b|\bone[\s-]word\b/i;
+const EXPLAIN_CUE =
+  /\b(?:explain|describe|discuss|why|how\s+(?:does|do|is|are|can)|justify|differentiate|distinguish|compare|elaborate|illustrate|account\s+for|give\s+reasons?|derive|prove)\b/i;
+/** Numerical problems: the working is mostly symbols, so fewer words are expected per mark. */
+const NUMERIC_CUE = /\b(?:solve|calculate|compute|evaluate|simplify|find|determine|how\s+(?:much|many|long|far))\b/i;
+
+interface SubstanceInput {
+  type: QuestionType;
+  points: number;
+  prompt: string;
+  acceptedAnswers: string[];
+}
+
+/**
+ * Word floor for full marks when nobody set one explicitly.
+ * `instructions` is extra paper text that applies to the question (a section
+ * heading such as "Answer in about 30 words each").
+ */
+export function defaultMinAnswerWords(q: SubstanceInput, instructions = ''): number {
+  if (!isSubjective(q.type) || !Number.isFinite(q.points) || q.points <= 0) return 0;
+  // A word limit printed on the question itself always wins.
+  const own = wordLimitFrom(q.prompt);
+  if (own !== null) return Math.min(MAX_REQUIRED_WORDS, own);
+
+  // The examiner's own model answer shows how much they expect: a one- to
+  // three-word key means a brief answer is fine, unless the question itself
+  // asks for an explanation (then the key is only the core point).
+  const reference = q.acceptedAnswers.length ? Math.max(...q.acceptedAnswers.map(countWords)) : 0;
+  const explains = EXPLAIN_CUE.test(q.prompt);
+  if (q.type === 'short') {
+    const prompt = q.prompt.trim();
+    if (q.points <= 1 || (BRIEF_CUE.test(prompt) && !explains)) return 0;
+    if (!explains && reference > 0 && reference <= 3) return 0;
+  }
+
+  // A limit for the whole section ("Answer in 30-50 words").
+  const general = instructions ? wordLimitFrom(instructions) : null;
+  if (general !== null) return Math.min(MAX_REQUIRED_WORDS, general);
+
+  // A calculation with numbers in it: working is mostly symbols, not words.
+  const numeric = NUMERIC_CUE.test(q.prompt) && /\d/.test(q.prompt) && !explains;
+  let words = numeric
+    ? Math.round((q.type === 'long' ? 6 : 3) * q.points)
+    : q.type === 'long'
+      ? Math.max(40, Math.round(15 * q.points))
+      : Math.round(5 + 10 * (q.points - 1));
+  if (q.type === 'short' && reference > 0 && reference < words) {
+    // A short model answer lowers the floor, but an "explain" question still needs at least half of it.
+    words = explains ? Math.max(Math.ceil(words / 2), reference) : Math.floor(reference * 0.5);
+  }
+  return Math.min(MAX_REQUIRED_WORDS, words);
+}
+
+/** The word floor that grading enforces for this question (0 = no floor). */
+export function requiredAnswerWords(q: SubstanceInput & { minAnswerWords?: number }): number {
+  if (!isSubjective(q.type)) return 0;
+  const explicit = q.minAnswerWords;
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit >= 0) {
+    return Math.min(MAX_REQUIRED_WORDS * 5, Math.round(explicit));
+  }
+  return defaultMinAnswerWords(q);
+}
+
+export interface SubstanceCap {
+  /** Highest score this answer can receive. Equal to the question's points when there is no limit. */
+  cap: number;
+  words: number;
+  required: number;
+}
+
+/**
+ * The most an answer can score given its length. Below the floor the cap grows
+ * in proportion to the words written (snapped down to half marks), with at
+ * least half a mark available and always half a mark short of full.
+ */
+export function substanceCap(q: SubstanceInput & { minAnswerWords?: number }, answer: string): SubstanceCap {
+  const worth = Number.isFinite(q.points) ? q.points : 0;
+  const required = requiredAnswerWords(q);
+  const words = countWords(answer);
+  if (required <= 0 || words >= required || worth <= 0.5) return { cap: worth, words, required };
+  const scaled = Math.floor(worth * (words / required) * 2) / 2;
+  return { cap: Math.min(worth - 0.5, Math.max(0.5, scaled)), words, required };
+}
+
+/**
+ * Whether a question can be graded automatically as it stands. One rule for
+ * every screen, so a row can never say "ready" and "no key" at the same time.
+ * - `ready`   → has its answer key / model answer
+ * - `missing` → nothing can grade it until a key is added (MCQ / True-False /
+ *               Fill in the blank always; Short when AI grading is off)
+ * - `ai`      → no model answer, but the AI evaluator marks it from the question
+ * - `manual`  → Long answer with no model answer and AI off: a teacher marks it
+ */
+export type KeyStatus = 'ready' | 'missing' | 'ai' | 'manual';
+
+export function answerKeyStatus(
+  q: { type: QuestionType; correctOptionIndex: number | null; acceptedAnswers: string[] },
+  aiEnabled: boolean
+): KeyStatus {
+  if (q.type === 'mcq' || q.type === 'truefalse') return q.correctOptionIndex === null ? 'missing' : 'ready';
+  if (q.acceptedAnswers.length > 0) return 'ready';
+  if (q.type === 'fill') return 'missing';
+  if (aiEnabled) return 'ai';
+  return q.type === 'short' ? 'missing' : 'manual';
+}
+
 /**
  * Any partial credit counts as graded-correct (the UI renders it as "partial");
  * zero is incorrect. Shared by manual and AI scoring so both read the same way.
@@ -59,6 +225,7 @@ export function gradeForAward(awarded: number): Grade {
  * - fill / short    → normalised match against accepted answers (typo tolerant ≤ 1 edit for words > 4 chars)
  * - long            → pending manual review (automatically matched only if an accepted answer exists)
  * - short / long without any key → pending (the AI evaluator or a human scores them)
+ * - short / long key matches are limited by `substanceCap()` (no full marks for a bare keyword)
  */
 export function gradeAnswer(
   question: Question,
@@ -87,14 +254,20 @@ export function gradeAnswer(
   const given = normalise(raw);
   const accepted = question.acceptedAnswers.map(normalise).filter(Boolean);
   const exact = accepted.some((a) => a === given);
-  // A student writing a full sentence that contains the key phrase is still correct
+  // A student writing a full sentence that contains the key phrase is still correct.
+  // Sentence punctuation is dropped from word edges first, so "…of scattering." still
+  // contains "scattering" (decimals such as "9.8" keep their point).
+  const loose = (text: string) => text.split(' ').map((t) => t.replace(/^[.'-]+|[.'-]+$/g, '')).filter(Boolean);
+  const givenWords = loose(given);
+  const givenText = ` ${givenWords.join(' ')} `;
   const contains =
     !exact &&
     question.type !== 'long' &&
     accepted.some((a) => {
-      if (a.length < 3) return false;
-      if (a.includes(' ')) return ` ${given} `.includes(` ${a} `);
-      return given.split(' ').includes(a);
+      const key = loose(a).join(' ');
+      if (key.length < 3) return false;
+      if (key.includes(' ')) return givenText.includes(` ${key} `);
+      return givenWords.includes(key);
     });
   const close =
     !exact &&
@@ -106,7 +279,15 @@ export function gradeAnswer(
       return dist <= (a.length > 4 ? 1 : 0);
     });
 
-  if (exact || contains || close) return { grade: 'correct', awarded: worth };
+  if (exact || contains || close) {
+    // Matching the key proves the idea is right, not that the answer is complete:
+    // a one-phrase reply to a multi-mark written question cannot take full marks.
+    if (isSubjective(question.type)) {
+      const { cap } = substanceCap(question, raw);
+      return { grade: 'correct', awarded: Math.min(worth, cap) };
+    }
+    return { grade: 'correct', awarded: worth };
+  }
   if (question.type === 'long') return { grade: 'pending', awarded: 0 };
   return { grade: 'incorrect', awarded: 0 };
 }

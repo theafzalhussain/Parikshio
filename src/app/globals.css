@@ -30,6 +30,13 @@ body {
   font-feature-settings: 'cv02' 1, 'cv03' 1, 'cv04' 1, 'liga' 1, 'calt' 1;
 }
 
+/* Hindi text: system Devanagari faces (Inter and Fraunces have no Devanagari glyphs). */
+:lang(hi),
+.hindi-text {
+  font-family: 'Nirmala UI', 'Noto Sans Devanagari', 'Kohinoor Devanagari', 'Mangal', var(--font-sans), sans-serif;
+  font-feature-settings: normal;
+}
+
 /*
  * Fine film grain over the whole canvas. It is a static, tiled texture on its
  * own fixed layer — painted once, never repainted on scroll — and it removes

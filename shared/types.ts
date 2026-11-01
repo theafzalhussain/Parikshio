@@ -30,20 +30,55 @@ export interface Question {
   correctOptionIndex: number | null;
   /** Accepted normalised text answers (fill / short / long) */
   acceptedAnswers: string[];
+  /** Whole or half marks (0.5 steps). */
   points: number;
   timerSeconds: number;
   explanation: string;
+  /**
+   * Short / long only: words an answer needs before it can earn full marks.
+   * 0 = brief answers are fine. Absent = derived from the marks and the prompt
+   * (see `requiredAnswerWords` in shared/grade.ts).
+   */
+  minAnswerWords?: number;
   createdBy: string;
   createdAt: number;
   /** present when the question was imported from an uploaded paper */
   sourcePaperId?: string;
   sourcePaperName?: string;
   sourceIndex?: number;
+  /**
+   * Machine translations shown to students on request, cached per language.
+   * Each one remembers a hash of the text it was made from, so editing the
+   * question makes the old translation stale instead of wrong.
+   */
+  translations?: Partial<Record<TranslationLang, QuestionTranslation>>;
+}
+
+/** Languages a student can switch a question into. */
+export type TranslationLang = 'hi';
+
+export interface QuestionTranslation {
+  prompt: string;
+  /** Same order as `Question.options` (MCQ / True-False), so answers stay option indexes. */
+  options: string[];
+  /** Hash of the English prompt + options this was translated from. */
+  sourceHash: string;
+  provider: 'deepl';
+  translatedAt: number;
+}
+
+/** A translated question as a student receives it — only the parts they may already see. */
+export interface StudentTranslation {
+  questionId: string;
+  lang: TranslationLang;
+  prompt: string;
+  /** Null when the student may read the prompt but not the options yet (self-paced list). */
+  options: string[] | null;
 }
 
 export type QuestionInput = Omit<
   Question,
-  'id' | 'createdBy' | 'createdAt' | 'sourcePaperId' | 'sourcePaperName' | 'sourceIndex'
+  'id' | 'createdBy' | 'createdAt' | 'sourcePaperId' | 'sourcePaperName' | 'sourceIndex' | 'translations'
 >;
 
 /** An uploaded question paper (PDF / DOCX / image / pasted text). */
@@ -64,6 +99,10 @@ export interface Paper {
     withOptions: number;
     withAnswers: number;
     averageConfidence: number;
+    /** Sum of question points. Absent on papers imported before it existed. */
+    totalMarks?: number;
+    /** Questions whose marks were read from the paper rather than defaulted. */
+    marksFromPaper?: number;
   };
   warnings: string[];
   /** first slice of extracted text, kept for transparency/debugging */
@@ -84,6 +123,8 @@ export interface StudentQuestion {
   options: string[];
   points: number;
   timerSeconds: number;
+  /** Short / long only: words needed before an answer can earn full marks (0 = brief is fine). */
+  minAnswerWords?: number;
 }
 
 export interface ActiveWindow {
@@ -261,6 +302,8 @@ export interface ExamPublic {
   /** Question-by-question review, only once the session has ended. */
   review?: ReviewItem[];
   endedAt?: number;
+  /** The server can translate questions into Hindi for this student. */
+  translationAvailable?: boolean;
 }
 
 /**
@@ -290,6 +333,11 @@ export interface AiEvaluation {
   confidence?: number;
   /** Low confidence or a suspected prompt-injection attempt — a human should look. */
   needsReview?: boolean;
+  /**
+   * Present when the answer was shorter than the question's word floor and the
+   * evaluator's score was lowered to the length cap (see `substanceCap`).
+   */
+  lengthCap?: { words: number; requiredWords: number; uncappedScore: number };
   error?: string;
   attempts: number;
   requestedAt: number;
@@ -322,6 +370,12 @@ export interface Response {
   gradedAt?: number;
   /** AI evaluation for short / long answers. Never sent to student devices. */
   ai?: AiEvaluation;
+  /**
+   * An answer written in Hindi, machine-translated to English so it can be
+   * matched against an English answer key. The original `answer` is what the
+   * student wrote and is never replaced.
+   */
+  answerTranslation?: { lang: TranslationLang; text: string; provider: 'deepl'; translatedAt: number };
 }
 
 /** Admin-facing snapshot of the dual-mode grading engine. */

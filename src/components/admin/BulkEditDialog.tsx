@@ -115,7 +115,8 @@ export function BulkEditDialog({
           <Input
             id="bulk-edit-points"
             type="number"
-            min={1}
+            min={0.25}
+            step={0.25}
             max={1000}
             value={points}
             placeholder="keep"

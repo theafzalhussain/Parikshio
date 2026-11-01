@@ -27,6 +27,8 @@ import { GroupLabel, Input, Label, Select, TextArea } from '@/components/ui/Fiel
 import { Loading, TypePill, typeLabel } from '@/components/ui/Pills';
 import { useToast } from '@/components/ui/Toast';
 import { api, ApiError, cx } from '@/lib/api';
+import { KeyStatusBadge, answerRowLabel, emptyAnswerHint } from '@/components/KeyStatus';
+import { answerKeyStatus } from '@shared/grade';
 import type { Difficulty, GradingStatus, Question, QuestionInput, QuestionType } from '@shared/types';
 
 const TYPES: QuestionType[] = ['mcq', 'truefalse', 'fill', 'short', 'long'];
@@ -124,7 +126,8 @@ export default function QuestionBankPage() {
       topic: q.topic,
       difficulty: q.difficulty,
       options: q.type === 'mcq' ? [...q.options] : ['', '', '', ''],
-      correctOptionIndex: q.correctOptionIndex ?? 0,
+      // A missing key stays missing: showing "A" ticked would save A as the answer.
+      correctOptionIndex: q.correctOptionIndex,
       acceptedAnswers: q.acceptedAnswers,
       points: q.points,
       timerSeconds: q.timerSeconds,
@@ -141,13 +144,24 @@ export default function QuestionBankPage() {
       type,
       options:
         type === 'truefalse' ? ['True', 'False'] : type === 'mcq' ? (f.options.length >= 2 ? f.options : ['', '', '', '']) : [],
-      correctOptionIndex: type === 'truefalse' ? 0 : type === 'mcq' ? f.correctOptionIndex ?? 0 : null,
+      correctOptionIndex:
+        type === 'truefalse'
+          ? f.correctOptionIndex === 0 || f.correctOptionIndex === 1
+            ? f.correctOptionIndex
+            : null
+          : type === 'mcq'
+            ? f.correctOptionIndex
+            : null,
       points: type === 'long' ? Math.max(f.points, 20) : f.points,
       timerSeconds: type === 'long' ? Math.max(f.timerSeconds, 180) : f.timerSeconds
     }));
   }
 
   async function save() {
+    if ((form.type === 'mcq' || form.type === 'truefalse') && (form.correctOptionIndex === null || form.correctOptionIndex === undefined)) {
+      setFormError(form.type === 'mcq' ? 'Mark the correct option (click its circle) before saving.' : 'Pick True or False as the answer.');
+      return;
+    }
     setBusy(true);
     setFormError(null);
     const payload: QuestionInput = {
@@ -372,6 +386,7 @@ export default function QuestionBankPage() {
                           <Badge tone="sky">from paper</Badge>
                         </Link>
                       )}
+                      {answerKeyStatus(q, aiOn) !== 'ready' && <KeyStatusBadge status={answerKeyStatus(q, aiOn)} />}
                     </div>
                     <p className="break-words text-[14.5px] leading-relaxed text-white/85">{q.prompt}</p>
 
@@ -398,11 +413,16 @@ export default function QuestionBankPage() {
                     {needsAnswersForDisplay(q) && (
                       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                         <span className="text-[11.5px] uppercase tracking-[0.12em] text-white/40">
-                          {q.type === 'fill' ? 'accepted' : 'reference'}
+                          {answerRowLabel(q.type)}
                         </span>
                         {q.acceptedAnswers.length === 0 ? (
-                          <span className="text-[12.5px] text-amber-300/80">
-                            {aiOn ? 'none · AI grades from the prompt' : 'manual review'}
+                          <span
+                            className={cx(
+                              'text-[12.5px]',
+                              answerKeyStatus(q, aiOn) === 'missing' ? 'text-amber-300/80' : 'text-white/50'
+                            )}
+                          >
+                            {emptyAnswerHint(q.type, answerKeyStatus(q, aiOn))}
                           </span>
                         ) : (
                           q.acceptedAnswers.map((a) => (
@@ -659,7 +679,16 @@ export default function QuestionBankPage() {
 
           {needsOptions && (
             <div>
-              <GroupLabel id="qf-options" hint="click the circle to mark the correct option">Options</GroupLabel>
+              <GroupLabel
+                id="qf-options"
+                hint={
+                  form.correctOptionIndex === null || form.correctOptionIndex === undefined
+                    ? 'no answer key yet · click the circle to mark the correct option'
+                    : 'click the circle to mark the correct option'
+                }
+              >
+                Options
+              </GroupLabel>
               <div role="group" aria-labelledby="qf-options" className="space-y-2">
                 {form.options.map((opt, i) => (
                   <div key={i} className="flex items-center gap-2">
@@ -691,8 +720,13 @@ export default function QuestionBankPage() {
                           setForm({
                             ...form,
                             options: form.options.filter((_, idx) => idx !== i),
+                            // Removing an option above the correct one shifts the correct one up.
                             correctOptionIndex:
-                              form.correctOptionIndex === i ? 0 : form.correctOptionIndex
+                              form.correctOptionIndex === null || form.correctOptionIndex === undefined || form.correctOptionIndex === i
+                                ? null
+                                : form.correctOptionIndex > i
+                                  ? form.correctOptionIndex - 1
+                                  : form.correctOptionIndex
                           })
                         }
                         aria-label="Remove option"
@@ -788,8 +822,9 @@ export default function QuestionBankPage() {
               <Label htmlFor="qf-points">Points</Label>
               <Input id="qf-points"
                 type="number"
-                min={1}
-                max={100}
+                min={0.25}
+                max={1000}
+                step={0.25}
                 value={form.points}
                 onChange={(e) => setForm({ ...form, points: Number(e.target.value) })}
               />

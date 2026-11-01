@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { Check } from 'lucide-react';
 import type { StudentQuestion } from '@shared/types';
+import { countWords } from '@shared/grade';
 import { Input, TextArea } from '@/components/ui/Field';
 import { cx } from '@/lib/api';
 
@@ -22,13 +23,19 @@ export function AnswerInput({
   draft,
   onDraft,
   disabled,
-  onSubmitShortcut
+  onSubmitShortcut,
+  translatedOptions,
+  hindi
 }: {
   question: StudentQuestion;
   draft: string;
   onDraft: (value: string) => void;
   disabled: boolean;
   onSubmitShortcut?: () => void;
+  /** Hindi labels in the same order as `question.options`; the answer stays the option index. */
+  translatedOptions?: string[] | null;
+  /** The student reads the question in Hindi: invite a Hindi answer. */
+  hindi?: boolean;
 }) {
   const objective = question.type === 'mcq' || question.type === 'truefalse';
 
@@ -88,7 +95,22 @@ export function AnswerInput({
               >
                 {selected ? <Check className="h-4 w-4" /> : String.fromCharCode(65 + i)}
               </span>
-              <span className="text-[15px] leading-relaxed text-white/90">{option}</span>
+              <span className="text-[15px] leading-relaxed text-white/90">
+                {translatedOptions && translatedOptions[i] ? (
+                  <>
+                    <span lang="hi" className="hindi-text block">
+                      {translatedOptions[i]}
+                    </span>
+                    {translatedOptions[i] !== option && (
+                      <span lang="en" className="mt-0.5 block text-[12.5px] text-white/45">
+                        {option}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  option
+                )}
+              </span>
             </button>
           );
         })}
@@ -98,27 +120,32 @@ export function AnswerInput({
 
   if (question.type === 'fill') {
     return (
-      <Input
-        value={draft}
-        onChange={(e) => onDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && onSubmitShortcut) {
-            e.preventDefault();
-            onSubmitShortcut();
-          }
-        }}
-        disabled={disabled}
-        placeholder="Type the missing word or value…"
-        aria-label="Your answer"
-        className="py-3.5 text-[16px] sm:text-[16px]"
-        autoFocus
-        autoComplete="off"
-        spellCheck={false}
-      />
+      <div>
+        <Input
+          value={draft}
+          onChange={(e) => onDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && onSubmitShortcut) {
+              e.preventDefault();
+              onSubmitShortcut();
+            }
+          }}
+          disabled={disabled}
+          placeholder={hindi ? 'छूटा हुआ शब्द लिखें (हिंदी या English)…' : 'Type the missing word or value…'}
+          aria-label="Your answer"
+          className="py-3.5 text-[16px] sm:text-[16px]"
+          autoFocus
+          autoComplete="off"
+          spellCheck={false}
+        />
+        {hindi && <p className="mt-1.5 text-[12px] text-white/45">You can answer in Hindi or English.</p>}
+      </div>
     );
   }
 
   const long = question.type === 'long';
+  const words = countWords(draft);
+  const minWords = question.minAnswerWords ?? 0;
   return (
     <div>
       <TextArea
@@ -133,17 +160,34 @@ export function AnswerInput({
         }}
         disabled={disabled}
         placeholder={
-          long
-            ? 'Write your full answer. Show each step — this one is reviewed carefully.'
-            : 'Answer in one or two sentences…'
+          hindi
+            ? long
+              ? 'अपना पूरा उत्तर लिखें — हिंदी या English, दोनों मान्य हैं…'
+              : 'अपना उत्तर लिखें — हिंदी या English…'
+            : long
+              ? 'Write your full answer. Show each step — this one is reviewed carefully.'
+              : minWords > 0
+                ? 'Explain your answer in full sentences…'
+                : 'Answer in one or two sentences…'
         }
         aria-label="Your answer"
+        aria-describedby={minWords > 0 ? `${question.id}-length` : undefined}
         className="text-[15px] leading-relaxed sm:text-[15px]"
         autoFocus
       />
-      <div className="mt-1.5 flex justify-between text-[12px] text-white/45">
-        <span>{long ? 'Reviewed after the question closes' : 'Ctrl + Enter to submit'}</span>
-        <span className="num">{draft.trim().split(/\s+/).filter(Boolean).length} words</span>
+      <div className="mt-1.5 flex justify-between gap-3 text-[12px] text-white/45">
+        <span id={minWords > 0 ? `${question.id}-length` : undefined}>
+          {minWords > 0
+            ? `Full marks need at least ${minWords} words${hindi ? ' · Hindi or English' : ''}`
+            : hindi
+              ? 'You can answer in Hindi or English'
+              : long
+                ? 'Reviewed after the question closes'
+                : 'Ctrl + Enter to submit'}
+        </span>
+        <span className={cx('num', minWords > 0 && words >= minWords && 'text-mint-300')}>
+          {minWords > 0 ? `${words}/${minWords}` : words} words
+        </span>
       </div>
     </div>
   );

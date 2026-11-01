@@ -38,6 +38,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Avatar, GradePill, Loading, StatusPill, TypePill, typeLabel } from '@/components/ui/Pills';
 import { useToast } from '@/components/ui/Toast';
 import { api, ApiError, cx, fmtMs, fmtRelative } from '@/lib/api';
+import { classroomResultMessage } from '@/lib/classroom';
 import { useServerClock, useSocket } from '@/lib/socket';
 import type {
   ActiveWindow,
@@ -71,6 +72,8 @@ interface ClassroomStatus {
   connected: boolean;
   email: string | null;
   connectedAt: number | null;
+  /** The callback URL that must be listed in the Google Cloud OAuth client. */
+  redirectUri?: string | null;
 }
 
 interface ClassroomCourse {
@@ -100,13 +103,16 @@ function AnswerChip({
   response,
   options
 }: {
-  response: { answer: string; questionType: QuestionType };
+  response: { answer: string; questionType: QuestionType; answerTranslation?: { text: string } };
   options: string[];
 }) {
   const objective = response.questionType === 'mcq' || response.questionType === 'truefalse';
   if (!objective)
     return (
-      <p className="max-w-[200px] truncate text-[12.5px] italic text-white/60" title={response.answer}>
+      <p
+        className="max-w-[200px] truncate text-[12.5px] italic text-white/60"
+        title={response.answerTranslation ? `${response.answer}\n\nEnglish: ${response.answerTranslation.text}` : response.answer}
+      >
         “{response.answer}”
       </p>
     );
@@ -210,18 +216,15 @@ export default function ControlRoomPage() {
   }, [loadClassroom]);
 
   useEffect(() => {
-    const result = new URLSearchParams(window.location.search).get('classroom');
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get('classroom');
     if (!result) return;
-    if (result === 'connected') {
-      push({ kind: 'success', title: 'Google Classroom connected' });
-      void loadClassroom();
-    } else if (result === 'denied') {
-      push({ kind: 'warn', title: 'Google Classroom connection was cancelled' });
-    } else if (result === 'error') {
-      push({ kind: 'error', title: 'Google Classroom connection failed', body: 'Check the OAuth setup and try connecting again.' });
-    }
+    const message = classroomResultMessage(result, params.get('reason'));
+    if (message) push(message);
+    if (result === 'connected') void loadClassroom();
     const url = new URL(window.location.href);
     url.searchParams.delete('classroom');
+    url.searchParams.delete('reason');
     window.history.replaceState({}, '', url);
   }, [push, loadClassroom]);
 
@@ -284,6 +287,10 @@ export default function ControlRoomPage() {
     };
     const onLocked = () => void load();
     const onEnded = () => void load();
+    // A push from another device (a phone, a second tab) must reach this screen too.
+    const onPushed = (payload: { examId: string }) => {
+      if (payload.examId === examId) void load();
+    };
     const onSetProgress = (payload: { examId: string; monitor: SetMonitor | null }) => {
       if (payload.examId === examId) setMonitor(payload.monitor);
     };
@@ -301,6 +308,7 @@ export default function ControlRoomPage() {
     socket.on('response:graded', onGraded);
     socket.on('leaderboard:update', onBoard);
     socket.on('student:tab-hidden', onTabHidden);
+    socket.on('question:pushed', onPushed);
     socket.on('question:locked', onLocked);
     socket.on('exam:ended', onEnded);
     socket.on('set:progress', onSetProgress);
@@ -317,6 +325,7 @@ export default function ControlRoomPage() {
       socket.off('response:graded', onGraded);
       socket.off('leaderboard:update', onBoard);
       socket.off('student:tab-hidden', onTabHidden);
+      socket.off('question:pushed', onPushed);
       socket.off('question:locked', onLocked);
       socket.off('exam:ended', onEnded);
       socket.off('set:progress', onSetProgress);
@@ -672,7 +681,8 @@ export default function ControlRoomPage() {
                             k: 'correct',
                             v: feed.filter((f) => f.questionId === active.questionId && f.grade === 'correct').length
                           },
-                          { k: 'timer set', v: `${Math.round((active.endsAt - active.pushedAt) / 1000)}s` }
+                          // A question locked early closes at the lock, so show how long it was open.
+                          { k: active.locked ? 'open for' : 'timer set', v: `${Math.round((active.endsAt - active.pushedAt) / 1000)}s` }
                         ].map((s) => (
                           <div key={s.k} className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-2.5">
                             <p className="num text-[15px] font-semibold text-white">{s.v}</p>
@@ -1074,6 +1084,12 @@ export default function ControlRoomPage() {
                     >
                       <GraduationCap className="h-3.5 w-3.5" /> Connect Google Classroom
                     </Button>
+                    {classroom.redirectUri && (
+                      <p className="mt-2.5 break-all text-[11px] leading-relaxed text-white/40">
+                        If Google shows “redirect_uri_mismatch”, add this callback to the OAuth client’s authorized redirect
+                        URIs in Google Cloud Console: <span className="font-mono text-white/60">{classroom.redirectUri}</span>
+                      </p>
+                    )}
                   </>
                 ) : (
                   <>
@@ -1204,6 +1220,16 @@ export default function ControlRoomPage() {
               <p className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap text-[13.5px] leading-relaxed text-white/75">
                 {gradingRow.answer || '— no answer submitted —'}
               </p>
+              {gradingRow.answerTranslation && (
+                <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
+                  <p className="text-[11px] uppercase tracking-[0.12em] text-white/40">
+                    English translation (DeepL) · used to match the answer key
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-white/60">
+                    {gradingRow.answerTranslation.text}
+                  </p>
+                </div>
+              )}
             </div>
             {isSubjectiveType(gradingRow.questionType) && (
               <AiEvaluationCard

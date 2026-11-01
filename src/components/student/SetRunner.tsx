@@ -31,6 +31,7 @@ import { Modal } from '@/components/ui/Modal';
 import { TypePill, typeLabel } from '@/components/ui/Pills';
 import { useToast } from '@/components/ui/Toast';
 import { AnswerInput, ShortcutHint } from './AnswerInput';
+import { LanguageToggle, QuestionPrompt, useQuestionTranslation, useStudentLanguage } from './QuestionLanguage';
 import { MobileTimerBar } from './MobileTimerBar';
 import { api, ApiError, cx } from '@/lib/api';
 import {
@@ -155,6 +156,11 @@ export function SetRunner({
   const remaining = running?.deadline ? Math.max(0, running.deadline - now) : 0;
   const allowance = running ? running.timerSeconds * 1000 : 0;
   const urgent = !!running && remaining <= 10_000;
+
+  // Hindi reading aid for the question this student has open.
+  const [lang, setLang] = useStudentLanguage();
+  const translationOn = lang === 'hi' && exam.translationAvailable === true;
+  const hindi = useQuestionTranslation(exam.id, running?.questionId, translationOn && !!running?.question);
 
   const counts = set.items.reduce(
     (acc, item) => {
@@ -511,12 +517,15 @@ export function SetRunner({
           </span>
           <span className="num text-[13px] text-white/50">· {running.points} pts</span>
         </div>
-        <div className="hidden items-center gap-2 lg:flex" aria-live="off">
-          <span className={cx('num text-[18px] font-semibold', urgent ? 'text-ember-300' : 'text-white')}>
-            {fmtClock(remaining)}
-          </span>
-          <Timer className={cx('h-4 w-4', urgent ? 'text-ember-300' : 'text-white/45')} />
-          {synced && <span className="text-[10.5px] uppercase tracking-[0.14em] text-white/45">server</span>}
+        <div className="flex items-center gap-3">
+          {exam.translationAvailable && <LanguageToggle lang={lang} onChange={setLang} loading={hindi.loading} />}
+          <div className="hidden items-center gap-2 lg:flex" aria-live="off">
+            <span className={cx('num text-[18px] font-semibold', urgent ? 'text-ember-300' : 'text-white')}>
+              {fmtClock(remaining)}
+            </span>
+            <Timer className={cx('h-4 w-4', urgent ? 'text-ember-300' : 'text-white/45')} />
+            {synced && <span className="text-[10.5px] uppercase tracking-[0.14em] text-white/45">server</span>}
+          </div>
         </div>
       </div>
 
@@ -525,9 +534,7 @@ export function SetRunner({
           <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gold-400/[0.1] font-display text-[16px] font-medium text-gold-200 ring-1 ring-inset ring-gold-300/25">
             {running.index}
           </span>
-          <h2 className="font-display text-[19px] font-normal leading-[1.5] text-white sm:text-[22px]">
-            {running.question.prompt}
-          </h2>
+          <QuestionPrompt prompt={running.question.prompt} translation={hindi.translation} error={hindi.error} />
         </div>
 
         <div className="mt-6">
@@ -537,6 +544,8 @@ export function SetRunner({
             onDraft={setDraft}
             disabled={busy !== null}
             onSubmitShortcut={() => void submit()}
+            translatedOptions={hindi.translation?.options ?? null}
+            hindi={!!hindi.translation}
           />
           <ShortcutHint type={running.type} />
         </div>

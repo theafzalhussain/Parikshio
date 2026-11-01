@@ -84,16 +84,25 @@ const securityHeaders = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   distDir,
+  outputFileTracingRoot: process.cwd(),
   reactStrictMode: true,
   eslint: { ignoreDuringBuilds: true },
   typescript: { ignoreBuildErrors: false },
   poweredByHeader: false,
-  experimental: {
-    // Keep server-side packages out of the client bundle
-    serverComponentsExternalPackages: ['mongoose', 'ioredis', 'bcryptjs']
-  },
+  // Keep server-side packages out of the client bundle
+  serverExternalPackages: ['mongoose', 'ioredis', 'bcryptjs'],
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
+  },
+  /**
+   * Split hosting (Vercel UI + Render API): Google sends the Classroom OAuth
+   * callback to the public site's /api/classroom/oauth/callback, which only the
+   * API can handle. Proxy that one path to the API host. When the UI and API
+   * share an origin (custom Express server), Express answers /api before Next.
+   */
+  async rewrites() {
+    if (!apiOrigin) return [];
+    return [{ source: '/api/classroom/oauth/callback', destination: `${apiOrigin}/api/classroom/oauth/callback` }];
   }
 };
 

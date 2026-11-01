@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Exam } from '../shared/types';
 import { config } from './config';
 import { db, store, type StoredUser } from './store';
@@ -35,6 +35,22 @@ interface GoogleTokenResponse {
   error_description?: string;
 }
 
+/**
+ * A Classroom failure the teacher can act on (connect first, reconnect, enable
+ * the API…). `status` is what the API answers with, so the message reaches the
+ * screen instead of a generic "something went wrong".
+ */
+export class ClassroomError extends Error {
+  readonly status: number;
+  readonly code: string;
+  constructor(message: string, status: number, code: string) {
+    super(message);
+    this.name = 'ClassroomError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 interface GoogleApiErrorBody {
   error?: { message?: string; status?: string };
 }
@@ -58,8 +74,11 @@ export interface ClassroomSubmission {
   state?: string;
 }
 
-const pendingOAuthStates = new Map<string, OAuthState>();
+/** Nonces of states already used, so a state works once (kept until it would expire anyway). */
+const usedStateNonces = new Map<string, number>();
 const inFlightPublications = new Map<string, Promise<ClassroomPublishResult>>();
+/** Short-lived access tokens, so a publish to 60 students does not refresh 120 times. */
+const accessTokens = new Map<string, { token: string; expiresAt: number }>();
 
 export interface ClassroomPublishResult {
   status: 'published' | 'already-published';
@@ -72,7 +91,7 @@ export interface ClassroomPublishResult {
 
 function assertClassroomConfigured(): void {
   if (!config.googleClassroom.enabled) {
-    throw new Error('Google Classroom OAuth is not configured on this server.');
+    throw new ClassroomError('Google Classroom OAuth is not configured on this server.', 503, 'classroom/not-configured');
   }
 }
 
@@ -92,7 +111,7 @@ function encryptRefreshToken(token: string): string {
 function decryptRefreshToken(encrypted: string): string {
   const [ivPart, tagPart, ciphertextPart, ...extra] = encrypted.split('.');
   if (!ivPart || !tagPart || !ciphertextPart || extra.length) {
-    throw new Error('Stored Google Classroom credentials are invalid. Reconnect the account.');
+    throw new ClassroomError('Stored Google Classroom credentials are invalid. Reconnect the account.', 409, 'classroom/reconnect');
   }
   try {
     const decipher = createDecipheriv('aes-256-gcm', encryptionKey(), Buffer.from(ivPart, 'base64url'));
@@ -102,21 +121,55 @@ function decryptRefreshToken(encrypted: string): string {
       decipher.final()
     ]).toString('utf8');
   } catch {
-    throw new Error('Stored Google Classroom credentials cannot be decrypted. Reconnect the account.');
+    // Happens after JWT_SECRET changes: the stored token was encrypted with the old key.
+    throw new ClassroomError('Stored Google Classroom credentials cannot be decrypted. Reconnect the account.', 409, 'classroom/reconnect');
   }
 }
 
+/**
+ * OAuth `state` is signed (HMAC over the JWT secret) rather than kept in
+ * memory: Render restarts and redeploys between "Connect" and Google's
+ * callback no longer lose it. It carries no secret, expires in 10 minutes and
+ * works once per server process.
+ */
+function stateKey(): Buffer {
+  return createHmac('sha256', config.jwtSecret).update('axiom:google-classroom:oauth-state:v1').digest();
+}
+
+function signState(record: OAuthState): string {
+  const body = Buffer.from(
+    JSON.stringify({ u: record.userId, r: record.returnTo, e: record.expiresAt, n: randomBytes(16).toString('base64url') })
+  ).toString('base64url');
+  const mac = createHmac('sha256', stateKey()).update(body).digest('base64url');
+  return `${body}.${mac}`;
+}
+
 function consumeOAuthState(state: string): OAuthState | null {
-  const record = pendingOAuthStates.get(state);
-  pendingOAuthStates.delete(state);
-  if (!record || record.expiresAt < Date.now()) return null;
-  return record;
+  const [body, mac, ...extra] = String(state ?? '').split('.');
+  if (!body || !mac || extra.length || state.length > 2_000) return null;
+  const expected = createHmac('sha256', stateKey()).update(body).digest();
+  const given = Buffer.from(mac, 'base64url');
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
+  let parsed: { u?: unknown; r?: unknown; e?: unknown; n?: unknown };
+  try {
+    parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  const { u, r, e, n } = parsed;
+  if (typeof u !== 'string' || typeof r !== 'string' || typeof e !== 'number' || typeof n !== 'string') return null;
+  const now = Date.now();
+  if (e < now || usedStateNonces.has(n)) return null;
+  // Only ever return to a path inside this app.
+  if (!r.startsWith('/admin/') || r.startsWith('//')) return null;
+  usedStateNonces.set(n, e);
+  return { userId: u, returnTo: r, expiresAt: e };
 }
 
 function pruneOAuthStates(): void {
   const now = Date.now();
-  for (const [state, record] of pendingOAuthStates) {
-    if (record.expiresAt < now) pendingOAuthStates.delete(state);
+  for (const [nonce, expiresAt] of usedStateNonces) {
+    if (expiresAt < now) usedStateNonces.delete(nonce);
   }
 }
 
@@ -125,17 +178,18 @@ export function classroomStatus(user: StoredUser) {
     configured: config.googleClassroom.enabled,
     connected: Boolean(user.googleClassroom?.encryptedRefreshToken),
     email: user.googleClassroom?.email ?? null,
-    connectedAt: user.googleClassroom?.connectedAt ?? null
+    connectedAt: user.googleClassroom?.connectedAt ?? null,
+    /** The exact callback URL that must be listed in the Google Cloud OAuth client. */
+    redirectUri: config.googleClassroom.enabled ? config.googleClassroom.redirectUri : null
   };
 }
 
 export function createClassroomAuthorizationUrl(user: StoredUser, returnTo: string): string {
   assertClassroomConfigured();
   pruneOAuthStates();
-  if (pendingOAuthStates.size >= 1000) throw new Error('Too many pending Google Classroom sign-ins. Try again shortly.');
+  if (usedStateNonces.size >= 10_000) throw new Error('Too many pending Google Classroom sign-ins. Try again shortly.');
 
-  const state = randomBytes(32).toString('base64url');
-  pendingOAuthStates.set(state, { userId: user.id, returnTo, expiresAt: Date.now() + OAUTH_STATE_TTL_MS });
+  const state = signState({ userId: user.id, returnTo, expiresAt: Date.now() + OAUTH_STATE_TTL_MS });
   const url = new URL(GOOGLE_AUTH_URL);
   url.search = new URLSearchParams({
     client_id: config.googleClassroom.clientId,
@@ -159,7 +213,23 @@ async function postOAuthToken(form: URLSearchParams): Promise<GoogleTokenRespons
   });
   const payload = (await response.json().catch(() => ({}))) as GoogleTokenResponse;
   if (!response.ok) {
-    throw new Error(payload.error_description || payload.error || 'Google OAuth token exchange failed.');
+    const code = payload.error ?? `http_${response.status}`;
+    if (code === 'invalid_grant' && form.get('grant_type') === 'refresh_token') {
+      // Revoked, password changed, or the OAuth app is still in "Testing" (tokens die after 7 days).
+      throw new ClassroomError(
+        'Google Classroom access has expired or was revoked. Disconnect and connect the account again.',
+        409,
+        'classroom/reconnect'
+      );
+    }
+    if (code === 'redirect_uri_mismatch') {
+      throw new ClassroomError(
+        `Google rejected the callback URL. Add ${config.googleClassroom.redirectUri} to the OAuth client's authorized redirect URIs.`,
+        502,
+        'classroom/redirect-uri'
+      );
+    }
+    throw new ClassroomError(payload.error_description || payload.error || 'Google OAuth token exchange failed.', 502, 'classroom/oauth-failed');
   }
   return payload;
 }
@@ -203,6 +273,8 @@ export async function finishClassroomAuthorization(state: string, code: string):
     connectedAt: Date.now()
   };
   persist('users', user as unknown as { id: string } & Record<string, unknown>);
+  // The token from this exchange is fresh: the first course list needs no refresh.
+  accessTokens.set(tokenCacheKey(user), { token: token.access_token, expiresAt: Date.now() + accessTokenLifetimeMs(token) });
   return pending;
 }
 
@@ -211,6 +283,7 @@ export function discardClassroomAuthorization(state: string): OAuthState | null 
 }
 
 export function disconnectClassroom(user: StoredUser): void {
+  accessTokens.delete(tokenCacheKey(user));
   // `undefined`, not `delete`: persist() turns undefined into $unset, so the
   // stored refresh token is really removed from MongoDB and does not come back
   // after the next restart.
@@ -218,17 +291,32 @@ export function disconnectClassroom(user: StoredUser): void {
   persist('users', user as unknown as { id: string } & Record<string, unknown>);
 }
 
-async function accessTokenFor(user: StoredUser): Promise<string> {
+/** Cache key that changes when the account is reconnected (new refresh token). */
+function tokenCacheKey(user: StoredUser): string {
+  return `${user.id}:${(user.googleClassroom?.encryptedRefreshToken ?? '').slice(-24)}`;
+}
+
+function accessTokenLifetimeMs(token: GoogleTokenResponse): number {
+  const seconds = Number(token.expires_in);
+  // A minute of margin so a token never expires in the middle of a publish.
+  return Math.max(60, (Number.isFinite(seconds) && seconds > 0 ? seconds : 3600) - 60) * 1000;
+}
+
+async function accessTokenFor(user: StoredUser, forceRefresh = false): Promise<string> {
   assertClassroomConfigured();
   const encrypted = user.googleClassroom?.encryptedRefreshToken;
-  if (!encrypted) throw new Error('Connect a Google Classroom account first.');
+  if (!encrypted) throw new ClassroomError('Connect a Google Classroom account first.', 409, 'classroom/not-connected');
+  const key = tokenCacheKey(user);
+  const cached = accessTokens.get(key);
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cached.token;
   const token = await postOAuthToken(new URLSearchParams({
     client_id: config.googleClassroom.clientId,
     client_secret: config.googleClassroom.clientSecret,
     refresh_token: decryptRefreshToken(encrypted),
     grant_type: 'refresh_token'
   }));
-  if (!token.access_token) throw new Error('Google did not return an access token.');
+  if (!token.access_token) throw new ClassroomError('Google did not return an access token.', 502, 'classroom/oauth-failed');
+  accessTokens.set(key, { token: token.access_token, expiresAt: Date.now() + accessTokenLifetimeMs(token) });
   return token.access_token;
 }
 
@@ -237,20 +325,27 @@ async function classroomRequest<T>(
   path: string,
   options: { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown } = {}
 ): Promise<T> {
-  const token = await accessTokenFor(user);
-  const response = await fetch(`${CLASSROOM_API_URL}${path}`, {
-    method: options.method ?? 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.body ? { 'Content-Type': 'application/json' } : {})
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-    signal: AbortSignal.timeout(20_000)
-  });
+  const send = async (token: string) =>
+    fetch(`${CLASSROOM_API_URL}${path}`, {
+      method: options.method ?? 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(options.body ? { 'Content-Type': 'application/json' } : {})
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: AbortSignal.timeout(20_000)
+    });
+  let response = await send(await accessTokenFor(user));
+  // A cached token Google no longer accepts: refresh once and retry.
+  if (response.status === 401) response = await send(await accessTokenFor(user, true));
   const payload = (await response.json().catch(() => ({}))) as T & GoogleApiErrorBody;
   if (!response.ok) {
-    const message = payload.error?.message?.slice(0, 300) || `Google Classroom returned HTTP ${response.status}.`;
-    throw new Error(message);
+    const status = payload.error?.status ?? '';
+    const disabled = response.status === 403 && /SERVICE_DISABLED|accessNotConfigured/i.test(`${status} ${payload.error?.message ?? ''}`);
+    const message = disabled
+      ? 'The Google Classroom API is not enabled for this Google Cloud project. Enable it in Google Cloud Console → APIs & Services.'
+      : payload.error?.message?.slice(0, 300) || `Google Classroom returned HTTP ${response.status}.`;
+    throw new ClassroomError(message, 502, disabled ? 'classroom/api-disabled' : 'classroom/google-error');
   }
   return payload;
 }
@@ -272,7 +367,7 @@ async function paged<T>(
     pageToken = typeof response.nextPageToken === 'string' ? response.nextPageToken : undefined;
     if (!pageToken) return results;
   }
-  throw new Error('Google Classroom returned too many pages to sync safely.');
+  throw new ClassroomError('Google Classroom returned too many pages to sync safely.', 502, 'classroom/too-large');
 }
 
 export async function listClassroomCourses(user: StoredUser): Promise<ClassroomCourse[]> {
@@ -310,11 +405,11 @@ export async function getClassroomCourse(
 }
 
 async function publishExamResultsOnce(exam: Exam): Promise<ClassroomPublishResult> {
-  if (exam.status !== 'ended') throw new Error('End the exam before publishing Classroom results.');
-  if (!exam.classroomCourseId) throw new Error('Link a Google Classroom course to this exam first.');
+  if (exam.status !== 'ended') throw new ClassroomError('End the exam before publishing Classroom results.', 409, 'classroom/not-ready');
+  if (!exam.classroomCourseId) throw new ClassroomError('Link a Google Classroom course to this exam first.', 409, 'classroom/no-course');
   const owner = db.userById(exam.adminId);
   if (!owner || owner.role !== 'admin' || !owner.googleClassroom?.encryptedRefreshToken) {
-    throw new Error('The faculty account linked to this exam has not connected Google Classroom.');
+    throw new ClassroomError('The faculty account linked to this exam has not connected Google Classroom.', 409, 'classroom/not-connected');
   }
   if (exam.classroomPublishStatus === 'published' && exam.classroomCourseWorkId) {
     return {
@@ -342,13 +437,13 @@ async function publishExamResultsOnce(exam: Exam): Promise<ClassroomPublishResul
   }
   const graded = matched.filter(({ user }) => (responsesByStudent.get(user.id) ?? []).length > 0);
   if (graded.some(({ user }) => responsesByStudent.get(user.id)!.some((response) => response.grade === 'pending'))) {
-    throw new Error('Some participating students still have answers awaiting grading. Retry the publish after grading finishes.');
+    throw new ClassroomError('Some participating students still have answers awaiting grading. Retry the publish after grading finishes.', 409, 'classroom/grading-pending');
   }
-  if (!graded.length) throw new Error('No existing Parikshio student accounts with exam results matched this Classroom roster.');
+  if (!graded.length) throw new ClassroomError('No existing Parikshio student accounts with exam results matched this Classroom roster.', 409, 'classroom/no-match');
 
   const questions = exam.questionIds.map((id) => db.questionById(id)).filter((question) => question !== undefined);
   const maxPoints = questions.reduce((total, question) => total + question.points, 0);
-  if (maxPoints <= 0) throw new Error('This exam has no valid points available to publish.');
+  if (maxPoints <= 0) throw new ClassroomError('This exam has no valid points available to publish.', 409, 'classroom/no-points');
 
   if (!exam.classroomCourseWorkId) {
     const work = await classroomRequest<{ id?: string }>(
@@ -365,7 +460,7 @@ async function publishExamResultsOnce(exam: Exam): Promise<ClassroomPublishResul
         }
       }
     );
-    if (!work.id) throw new Error('Google Classroom created coursework without returning its ID.');
+    if (!work.id) throw new ClassroomError('Google Classroom created coursework without returning its ID.', 502, 'classroom/google-error');
     exam.classroomCourseWorkId = work.id;
     persist('exams', exam as unknown as { id: string } & Record<string, unknown>);
   }
@@ -400,7 +495,7 @@ async function publishExamResultsOnce(exam: Exam): Promise<ClassroomPublishResul
     gradedStudents++;
   }
 
-  if (!gradedStudents) throw new Error('No Classroom submissions were available for the matched students.');
+  if (!gradedStudents) throw new ClassroomError('No Classroom submissions were available for the matched students.', 409, 'classroom/no-submissions');
   exam.classroomPublishStatus = 'published';
   exam.classroomPublishError = undefined;
   exam.classroomPublishedAt = Date.now();

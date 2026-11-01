@@ -1,5 +1,4 @@
 import http from 'node:http';
-import next from 'next';
 import express from 'express';
 import { Server } from 'socket.io';
 import { config, isProd } from './config';
@@ -66,9 +65,16 @@ async function main() {
   // Evaluations interrupted by a restart pick up where they left off.
   resumeAiQueue();
 
-  const nextApp = next({ dev: !isProd, hostname: '0.0.0.0', port: config.port });
-  const handle = nextApp.getRequestHandler();
-  await nextApp.prepare();
+  // An API-only host (config.apiOnly) never loads the Next.js page server:
+  // its boot time and memory go to the API instead.
+  let handlePage: ((req: express.Request, res: express.Response) => Promise<void>) | null = null;
+  if (!config.apiOnly) {
+    const { default: next } = await import('next');
+    const nextApp = next({ dev: !isProd, hostname: '0.0.0.0', port: config.port });
+    const handle = nextApp.getRequestHandler();
+    await nextApp.prepare();
+    handlePage = (req, res) => handle(req, res);
+  }
 
   const app = express();
   app.disable('x-powered-by');
@@ -128,7 +134,20 @@ async function main() {
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'Not found', code: 'not-found' });
   });
-  app.all('*', (req, res) => handle(req, res));
+  if (handlePage) {
+    const pages = handlePage;
+    app.all('*', (req, res) => pages(req, res));
+  } else {
+    // Pages live on the public site. A temporary redirect keeps this reversible
+    // (browsers do not remember it), and never points a host back at itself.
+    const site = config.appBaseUrl ? new URL(config.appBaseUrl) : null;
+    app.all('*', (req, res) => {
+      if (site && site.host !== req.headers.host && (req.method === 'GET' || req.method === 'HEAD')) {
+        return res.redirect(302, `${site.origin}${req.originalUrl}`);
+      }
+      res.status(404).json({ error: 'Not found', code: 'not-found' });
+    });
+  }
 
   /**
    * Final error net for the API. Express 4 does not catch rejections from async
@@ -137,6 +156,17 @@ async function main() {
    * process down (and with it the in-memory store, when Mongo is absent).
    */
   app.use((err: Error, req: express.Request, res: express.Response, _nextFn: express.NextFunction) => {
+    // The JSON body parser rejects malformed or oversized bodies with a 4xx
+    // status of its own. That is the client's mistake, not a server failure.
+    const parserStatus = Number((err as { status?: unknown }).status);
+    if ((err as { type?: unknown }).type && parserStatus >= 400 && parserStatus < 500) {
+      if (res.headersSent) return;
+      res.status(parserStatus).json({
+        error: parserStatus === 413 ? 'The request is too large.' : 'The request body could not be read. Send valid JSON.',
+        code: parserStatus === 413 ? 'request/too-large' : 'request/invalid-body'
+      });
+      return;
+    }
     console.error(`[api] unhandled error on ${req.method} ${req.originalUrl}:`, err);
     if (res.headersSent) return;
     res.status(500).json({ error: 'Something went wrong on our side. Please try again.' });
@@ -243,7 +273,7 @@ async function main() {
 
   server.listen(config.port, '0.0.0.0', () => {
     console.log(`\n  ⬢  Parikshio  ·  http://localhost:${config.port}`);
-    console.log(`     engine: ${isProd ? 'production' : 'development'}  ·  boot ${Date.now() - t0}ms`);
+    console.log(`     engine: ${isProd ? 'production' : 'development'}${config.apiOnly ? ' · API only (pages are served by APP_URL)' : ''}  ·  boot ${Date.now() - t0}ms`);
     console.log(`     mongo:  ${mongoReady() ? 'connected' : 'ephemeral (no MONGODB_URI)'}`);
     console.log(`     redis:  ${cache.stats().status}`);
     console.log(

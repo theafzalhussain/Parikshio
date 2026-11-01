@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Check, Plus, X } from 'lucide-react';
 import type { Difficulty, Question, QuestionType } from '@shared/types';
+import { defaultMinAnswerWords } from '@shared/grade';
 import { api, ApiError, cx } from '@/lib/api';
 import { Button, IconButton } from './ui/Button';
 import { GroupLabel, Input, Label, Select, TextArea } from './ui/Field';
@@ -17,6 +18,8 @@ const TYPE_LABEL: Record<QuestionType, string> = {
   short: 'Short',
   long: 'Long'
 };
+/** Same cap as the paper parser (A–H). */
+const MAX_OPTIONS = 8;
 
 interface FormState {
   type: QuestionType;
@@ -24,10 +27,13 @@ interface FormState {
   topic: string;
   difficulty: Difficulty;
   options: string[];
-  correctOptionIndex: number;
+  /** null until the teacher marks one, so a missing key is never saved as "A". */
+  correctOptionIndex: number | null;
   points: number;
   timerSeconds: number;
   explanation: string;
+  /** Short / long word floor for full marks; '' = automatic from the marks. */
+  minWords: string;
 }
 
 const empty: FormState = {
@@ -36,10 +42,11 @@ const empty: FormState = {
   topic: 'General',
   difficulty: 'medium',
   options: ['', '', '', ''],
-  correctOptionIndex: 0,
+  correctOptionIndex: null,
   points: 5,
   timerSeconds: 45,
-  explanation: ''
+  explanation: '',
+  minWords: ''
 };
 
 export function QuestionEditModal({
@@ -68,10 +75,11 @@ export function QuestionEditModal({
       topic: question.topic,
       difficulty: question.difficulty,
       options: question.type === 'mcq' && question.options.length ? [...question.options] : ['', '', '', ''],
-      correctOptionIndex: question.correctOptionIndex ?? 0,
+      correctOptionIndex: question.correctOptionIndex,
       points: question.points,
       timerSeconds: question.timerSeconds,
-      explanation: question.explanation ?? ''
+      explanation: question.explanation ?? '',
+      minWords: typeof question.minAnswerWords === 'number' ? String(question.minAnswerWords) : ''
     });
     setAnswers(question.acceptedAnswers.join('\n'));
   }, [open, question]);
@@ -81,14 +89,41 @@ export function QuestionEditModal({
       ...f,
       type,
       options: type === 'truefalse' ? ['True', 'False'] : type === 'mcq' ? (f.options.length >= 2 ? f.options : ['', '', '', '']) : [],
-      correctOptionIndex: type === 'truefalse' ? 0 : f.correctOptionIndex
+      // Switching format keeps a key only when it still points at a real choice.
+      correctOptionIndex:
+        type === 'truefalse'
+          ? f.correctOptionIndex === 0 || f.correctOptionIndex === 1
+            ? f.correctOptionIndex
+            : null
+          : type === 'mcq'
+            ? f.correctOptionIndex
+            : null
+    }));
+  }
+
+  function removeOption(index: number) {
+    setForm((f) => ({
+      ...f,
+      options: f.options.filter((_, i) => i !== index),
+      // Removing an option above the correct one shifts the correct one up.
+      correctOptionIndex:
+        f.correctOptionIndex === null || f.correctOptionIndex === index
+          ? null
+          : f.correctOptionIndex > index
+            ? f.correctOptionIndex - 1
+            : f.correctOptionIndex
     }));
   }
 
   async function save() {
     if (!question) return;
+    if ((form.type === 'mcq' || form.type === 'truefalse') && form.correctOptionIndex === null) {
+      setError(form.type === 'mcq' ? 'Mark the correct option before saving.' : 'Pick True or False as the answer.');
+      return;
+    }
     setBusy(true);
     setError(null);
+    const subjective = form.type === 'short' || form.type === 'long';
     const payload = {
       type: form.type,
       prompt: form.prompt,
@@ -102,7 +137,9 @@ export function QuestionEditModal({
           : answers.split('\n').map((a) => a.trim()).filter(Boolean),
       points: form.points,
       timerSeconds: form.timerSeconds,
-      explanation: form.explanation
+      explanation: form.explanation,
+      // null clears an override, so the floor follows the marks again
+      minAnswerWords: subjective && form.minWords.trim() !== '' ? Number(form.minWords) : null
     };
     try {
       const res = await api<{ question: Question }>(`/questions/${question.id}`, { method: 'PATCH', body: payload });
@@ -118,6 +155,15 @@ export function QuestionEditModal({
 
   const needsOptions = form.type === 'mcq';
   const needsAnswers = form.type === 'fill' || form.type === 'short' || form.type === 'long';
+  const subjective = form.type === 'short' || form.type === 'long';
+  const autoMinWords = subjective
+    ? defaultMinAnswerWords({
+        type: form.type,
+        points: form.points,
+        prompt: form.prompt,
+        acceptedAnswers: answers.split('\n').map((a) => a.trim()).filter(Boolean)
+      })
+    : 0;
 
   return (
     <Modal
@@ -184,11 +230,12 @@ export function QuestionEditModal({
             </Select>
           </div>
           <div>
-            <Label htmlFor="qe-points">Points</Label>
+            <Label htmlFor="qe-points" hint="steps of 0.25">Points</Label>
             <Input id="qe-points"
               type="number"
-              min={1}
-              max={100}
+              min={0.25}
+              max={1000}
+              step={0.25}
               value={form.points}
               onChange={(e) => setForm({ ...form, points: Number(e.target.value) })}
             />
@@ -197,7 +244,12 @@ export function QuestionEditModal({
 
         {needsOptions && (
           <div>
-            <GroupLabel id="qe-options" hint="click a circle to mark the correct option">Options</GroupLabel>
+            <GroupLabel
+              id="qe-options"
+              hint={form.correctOptionIndex === null ? 'no answer key yet · click a circle to mark the correct option' : 'click a circle to mark the correct option'}
+            >
+              Options
+            </GroupLabel>
             <div role="group" aria-labelledby="qe-options" className="space-y-2">
               {form.options.map((opt, i) => (
                 <div key={i} className="flex items-center gap-2">
@@ -223,22 +275,13 @@ export function QuestionEditModal({
                     placeholder={`Option ${String.fromCharCode(65 + i)}`}
                   />
                   {form.options.length > 2 && (
-                    <IconButton
-                      onClick={() =>
-                        setForm({
-                          ...form,
-                          options: form.options.filter((_, idx) => idx !== i),
-                          correctOptionIndex: form.correctOptionIndex === i ? 0 : form.correctOptionIndex
-                        })
-                      }
-                      aria-label="Remove option"
-                    >
+                    <IconButton onClick={() => removeOption(i)} aria-label="Remove option">
                       <X className="h-3.5 w-3.5" />
                     </IconButton>
                   )}
                 </div>
               ))}
-              {form.options.length < 6 && (
+              {form.options.length < MAX_OPTIONS && (
                 <Button type="button" variant="ghost" size="sm" onClick={() => setForm({ ...form, options: [...form.options, ''] })}>
                   <Plus className="h-3.5 w-3.5" /> Add option
                 </Button>
@@ -287,6 +330,28 @@ export function QuestionEditModal({
                   ? 'One key point per line — empty means AI marks from the prompt (or manual review if AI is off)'
                   : 'azimuthal\nangular momentum'
               }
+            />
+          </div>
+        )}
+
+        {subjective && (
+          <div>
+            <Label
+              htmlFor="qe-min-words"
+              hint={`answers shorter than this cannot get full marks · empty = automatic (${autoMinWords === 0 ? 'no minimum' : `${autoMinWords} words`})`}
+            >
+              Minimum words for full marks
+            </Label>
+            <Input
+              id="qe-min-words"
+              type="number"
+              min={0}
+              max={2000}
+              step={1}
+              value={form.minWords}
+              placeholder={`auto · ${autoMinWords}`}
+              onChange={(e) => setForm({ ...form, minWords: e.target.value })}
+              className="w-[160px]"
             />
           </div>
         )}

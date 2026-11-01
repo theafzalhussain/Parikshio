@@ -20,13 +20,27 @@ import type {
   StudentSetItem,
   StudentSetView
 } from '../shared/types';
-import { buildQuestionStat, gradeAnswer, gradeForAward, rankResponses } from '../shared/grade';
+import {
+  buildQuestionStat,
+  gradeAnswer,
+  gradeForAward,
+  isSubjective,
+  rankResponses,
+  requiredAnswerWords
+} from '../shared/grade';
 import { config } from './config';
 import { cache, cacheKeys } from './cache';
 import { persist, unpersist } from './mongo';
 import { db, examCode, store, uid } from './store';
 import { emitExam, emitStaff, examRoom, ioInstance } from './realtime';
-import { broadcastGradeChange, forgetAiWork, requestAiEvaluation, wantsAutoAi } from './grading';
+import {
+  broadcastGradeChange,
+  forgetAiWork,
+  gradeTranslatedAnswer,
+  needsAnswerTranslation,
+  requestAiEvaluation,
+  wantsAutoAi
+} from './grading';
 import { examSettings, resultSealed, studentsSeeLeaderboard } from './sessionRules';
 
 const lockTimers = new Map<string, NodeJS.Timeout>();
@@ -98,7 +112,9 @@ export function sanitizeQuestion(q: Question): StudentQuestion {
     difficulty: q.difficulty,
     options: q.options,
     points: q.points,
-    timerSeconds: q.timerSeconds
+    timerSeconds: q.timerSeconds,
+    // Students see the length expected for full marks (a grading rule, not the answer).
+    ...(isSubjective(q.type) ? { minAnswerWords: requiredAnswerWords(q) } : {})
   };
 }
 
@@ -269,8 +285,25 @@ export function buildExamPublic(exam: Exam, studentId?: string): ExamPublic {
     myAnswers,
     showLeaderboard: studentsSeeLeaderboard(exam),
     ...(exam.status === 'ended' && studentId ? { review: buildReview(exam, studentId) } : {}),
-    endedAt: exam.endedAt
+    endedAt: exam.endedAt,
+    translationAvailable: config.deepl.enabled
   };
+}
+
+/**
+ * What of a question this student can already read, taken from the exact view
+ * `buildExamPublic` sends them, so a translation can never reveal more: the
+ * prompt and options of the live push, a self-paced item (prompt only until
+ * its timer starts) or a review row after the session. Null = not visible.
+ */
+export function visibleQuestionParts(exam: Exam, studentId: string, questionId: string): { options: boolean } | null {
+  const view = buildExamPublic(exam, studentId);
+  if (view.active?.questionId === questionId) return { options: true };
+  const item = view.set?.items.find((i) => i.questionId === questionId);
+  if (item?.question) return { options: true };
+  if (view.review?.some((r) => r.questionId === questionId)) return { options: true };
+  if (item?.prompt) return { options: false };
+  return null;
 }
 
 /**
@@ -672,6 +705,15 @@ export async function pushQuestion(
 
 export function lockQuestion(exam: Exam): void {
   if (!exam.current || exam.current.locked) return;
+  // A lock before the timer runs out closes the question now. Answers are
+  // checked against `endsAt` (plus the in-flight grace), and results unseal at
+  // the lock, so leaving the original deadline let a student submit after
+  // classmates could already see whether their answers were right.
+  const now = Date.now();
+  if (now < exam.current.endsAt) {
+    exam.current.endsAt = now;
+    rememberWindow(exam, exam.current.questionId, exam.current.pushedAt, now);
+  }
   exam.current.locked = true;
   persistExam(exam);
   void cache.delPrefix(cacheKeys.examPrefix(exam.id));
@@ -901,7 +943,10 @@ export function submitAnswer(exam: Exam, student: PublicUser, payload: SubmitPay
   // Dual-mode grading: objective formats are settled by the answer key right
   // here; subjective ones are handed to the AI evaluator and start as pending.
   const useAi = wantsAutoAi(question, payload.answer);
-  const { grade, awarded } = useAi ? { grade: 'pending' as const, awarded: 0 } : gradeAnswer(question, payload.answer);
+  const keyed = useAi ? { grade: 'pending' as const, awarded: 0 } : gradeAnswer(question, payload.answer);
+  // A Hindi answer to an English key is translated first (async); until then it is pending.
+  const translateFirst = !useAi && needsAnswerTranslation(question, payload.answer, keyed.grade);
+  const { grade, awarded } = translateFirst ? { grade: 'pending' as const, awarded: 0 } : keyed;
   const response: Response = {
     id: uid('rsp_'),
     examId: exam.id,
@@ -920,6 +965,8 @@ export function submitAnswer(exam: Exam, student: PublicUser, payload: SubmitPay
   };
   store.responses.push(response);
   if (useAi) requestAiEvaluation(response, { silent: true });
+  // Deferred so `response:new` reaches the control room before the graded update.
+  if (translateFirst) setImmediate(() => void gradeTranslatedAnswer(response));
   persist('responses', response as unknown as { id: string } & Record<string, unknown>);
   void cache.del(cacheKeys.leaderboard(exam.id), cacheKeys.analytics(exam.id));
 
