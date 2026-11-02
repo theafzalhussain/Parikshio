@@ -20,6 +20,7 @@ import {
 import { StudentShell } from '@/components/StudentShell';
 import { HBar, accuracyColor } from '@/components/charts/Charts';
 import { Achievements } from '@/components/student/Achievements';
+import { StudentIdCard } from '@/components/student/StudentIdCard';
 import { LevelCard } from '@/components/student/LevelCard';
 import { CountUp, HorizonGrid, MotionZone, Tilt3D } from '@/components/student/Motion3D';
 import { Badge, EmptyState, Panel, SectionHead, Stat } from '@/components/ui/Panel';
@@ -206,6 +207,7 @@ export default function StudentLobby() {
                 )}
               </p>
               {user?.org && <p className="mt-2 text-[13.5px] text-white/50">{user.org}</p>}
+              {user?.studentCode && <StudentIdCard code={user.studentCode} className="mt-4" />}
 
               <form
                 className="mt-7 flex flex-wrap gap-2.5 rounded-2xl border border-white/[0.08] bg-ink-950/50 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"

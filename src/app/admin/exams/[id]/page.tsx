@@ -63,6 +63,8 @@ interface Detail {
   settings: ExamSettings;
   leaderboard: LeaderboardEntry[];
   grading: GradingStatus;
+  /** Student IDs by account id for everyone in this session. */
+  studentCodes?: Record<string, string>;
   responses: (Response & { questionPrompt: string; questionType: QuestionType; maxPoints: number })[];
 }
 
@@ -307,7 +309,7 @@ export default function ControlRoomPage() {
       push({
         kind: 'warn',
         title: 'Student left the exam tab',
-        body: `${event.studentName} · student ID ${event.studentId}`
+        body: `${event.studentName}${event.studentCode ? ` · Student ID ${event.studentCode}` : ''}`
       });
     };
 
@@ -369,6 +371,32 @@ export default function ControlRoomPage() {
   }, [queued]);
   const visibleIds = visibleQueue.map(({ q }) => q.id);
   const visibleSelected = visibleIds.filter((id) => selected.includes(id)).length;
+
+  /**
+   * Questions whose answers students have seen (a lock or a closed set) cannot
+   * go out again; only the question still running may be re-pushed for more time.
+   */
+  const shownIds = useMemo(() => new Set(detail?.exam.answersShown ?? []), [detail?.exam.answersShown]);
+  const runningId = active && !active.locked ? active.questionId : null;
+  const canPush = (q: Question) => q.id === runningId || !shownIds.has(q.id);
+  const nextToPush = active ? queued.slice(active.index).find((q) => !shownIds.has(q.id)) ?? null : null;
+  const firstToPush = queued.find((q) => !shownIds.has(q.id)) ?? null;
+  const pushableSelected = queued.filter((q) => selected.includes(q.id) && !shownIds.has(q.id) && q.id !== runningId);
+
+  /** Student IDs by account id: the session snapshot plus whatever arrived live since. */
+  const studentCodes = useMemo(() => {
+    const codes: Record<string, string> = { ...(detail?.studentCodes ?? {}) };
+    feed.forEach((r) => {
+      if (r.studentCode) codes[r.studentId] = r.studentCode;
+    });
+    monitor?.inProgress.forEach((row) => {
+      if (row.studentCode) codes[row.studentId] = row.studentCode;
+    });
+    tabSwitches.forEach((event) => {
+      if (event.studentCode) codes[event.studentId] = event.studentCode;
+    });
+    return codes;
+  }, [detail?.studentCodes, feed, monitor, tabSwitches]);
 
   const pushedIds = new Set((detail?.active ? [detail.active.questionId] : []).concat([]));
 
@@ -719,8 +747,8 @@ export default function ControlRoomPage() {
                         <Button variant="secondary" size="sm" onClick={lockNow} disabled={active.locked}>
                           <Lock className="h-3.5 w-3.5" /> Lock now
                         </Button>
-                        {queued[active.index] && (
-                          <Button variant="gold" size="sm" onClick={() => pushQuestion(queued[active.index])} loading={busyId === queued[active.index].id}>
+                        {nextToPush && (
+                          <Button variant="gold" size="sm" onClick={() => pushQuestion(nextToPush)} loading={busyId === nextToPush.id}>
                             <Send className="h-3.5 w-3.5" /> Push next
                           </Button>
                         )}
@@ -768,9 +796,9 @@ export default function ControlRoomPage() {
                             <BarChart3 className="h-3.5 w-3.5" /> Open analytics
                           </LinkButton>
                         ) : (
-                          queued[0] && (
-                            <Button size="sm" variant="gold" onClick={() => pushQuestion(queued[0])}>
-                              <Zap className="h-3.5 w-3.5" /> Push question 1
+                          firstToPush && (
+                            <Button size="sm" variant="gold" onClick={() => pushQuestion(firstToPush)}>
+                              <Zap className="h-3.5 w-3.5" /> Push question {queued.indexOf(firstToPush) + 1}
                             </Button>
                           )
                         )
@@ -872,9 +900,14 @@ export default function ControlRoomPage() {
                         variant="gold"
                         size="sm"
                         onClick={() => setBulkPushOpen(true)}
-                        disabled={selected.length === 0}
+                        disabled={pushableSelected.length === 0}
+                        title={
+                          pushableSelected.length < selected.length
+                            ? 'Questions whose answers students have seen (or the one on screen) are left out'
+                            : undefined
+                        }
                       >
-                        <Layers className="h-3.5 w-3.5" /> Push {selected.length || ''} together
+                        <Layers className="h-3.5 w-3.5" /> Push {pushableSelected.length || ''} together
                       </Button>
                     </div>
                   </div>
@@ -933,6 +966,11 @@ export default function ControlRoomPage() {
                             <span className="text-[11.5px] text-white/45">{q.topic}</span>
                             <span className="num text-[11.5px] text-white/45">· {q.points} pts</span>
                             {isActive && <Badge tone="gold">on screen</Badge>}
+                            {shownIds.has(q.id) && (
+                              <Badge tone="mint">
+                                <Check className="h-3 w-3" /> answer shown
+                              </Badge>
+                            )}
                           </div>
                         </div>
                         {/* Wraps under the question on narrow screens instead of squeezing it. */}
@@ -956,7 +994,12 @@ export default function ControlRoomPage() {
                             variant={isActive ? 'secondary' : 'outline'}
                             onClick={() => pushQuestion(q)}
                             loading={busyId === q.id}
-                            disabled={exam.status === 'ended'}
+                            disabled={exam.status === 'ended' || !canPush(q)}
+                            title={
+                              canPush(q)
+                                ? undefined
+                                : 'Students have already seen the answer to this question, so it cannot be pushed again'
+                            }
                           >
                             {isActive ? 'Re-push' : 'Push'}
                           </Button>
@@ -1006,7 +1049,14 @@ export default function ControlRoomPage() {
                     >
                       <Avatar name={r.studentName} size={26} />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-[13px] text-white/80">{r.studentName}</p>
+                        <p className="truncate text-[13px] text-white/80">
+                          {r.studentName}
+                          {(r.studentCode ?? studentCodes[r.studentId]) && (
+                            <span className="ml-1.5 font-mono text-[11px] tracking-[0.04em] text-gold-200/75">
+                              {r.studentCode ?? studentCodes[r.studentId]}
+                            </span>
+                          )}
+                        </p>
                         <p className="truncate text-[11.5px] text-white/45">
                           {r.questionPrompt.slice(0, 64)}
                           {r.questionPrompt.length > 64 ? '…' : ''}
@@ -1066,7 +1116,7 @@ export default function ControlRoomPage() {
                 </div>
                 <p className="mt-1.5 text-[12px] text-white/50">Accuracy first, then response speed.</p>
                 <div className="mt-3">
-                  <Leaderboard entries={board} max={10} />
+                  <Leaderboard entries={board} max={10} studentCodes={studentCodes} />
                 </div>
               </Panel>
 
@@ -1122,7 +1172,7 @@ export default function ControlRoomPage() {
                           </span>
                         </div>
                         <p className="mt-1 break-all font-mono text-[11px] text-white/50">
-                          Student ID: {event.studentId}
+                          Student ID: {event.studentCode ?? studentCodes[event.studentId] ?? '—'}
                         </p>
                       </div>
                     ))
@@ -1269,7 +1319,11 @@ export default function ControlRoomPage() {
         open={!!gradingRow}
         onClose={() => setGrading(null)}
         title="Score this response"
-        description={gradingRow ? `${gradingRow.studentName} · ${gradingRow.questionPrompt.slice(0, 90)}` : undefined}
+        description={
+          gradingRow
+            ? `${gradingRow.studentName}${(gradingRow.studentCode ?? studentCodes[gradingRow.studentId]) ? ` (${gradingRow.studentCode ?? studentCodes[gradingRow.studentId]})` : ''} · ${gradingRow.questionPrompt.slice(0, 90)}`
+            : undefined
+        }
         width="max-w-2xl"
         footer={
           <>
@@ -1347,7 +1401,7 @@ export default function ControlRoomPage() {
             open={bulkPushOpen}
             onClose={() => setBulkPushOpen(false)}
             examId={examId}
-            questions={queued.filter((q) => selected.includes(q.id))}
+            questions={pushableSelected}
             initialTimers={overrides}
             defaults={detail.settings.setDefaults}
             onPushed={() => {

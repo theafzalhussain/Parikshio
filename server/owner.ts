@@ -44,6 +44,7 @@ import {
   type AuditEntry
 } from './security';
 import { db, store, uid, type ContactMessage, type OwnerCredential, type OwnerSession, type PasswordReset, type StoredUser } from './store';
+import { ensureStudentCode } from './studentCode';
 import { CONTACT_ROLES, contactTopicLabel, isContactTopic } from '../shared/contact';
 import { cleanOrg, ORG_NONE, orgKey } from '../shared/org';
 import type {
@@ -498,6 +499,7 @@ function userRow(u: StoredUser, stats: UserStats): OwnerUserRow {
     email: u.email,
     role: u.role,
     org: u.org,
+    ...(u.role === 'student' && u.studentCode ? { studentCode: u.studentCode } : {}),
     createdAt: u.createdAt,
     lastLoginAt: u.lastLoginAt ?? null,
     google: !!u.googleId,
@@ -711,7 +713,7 @@ ownerApi.get('/users', (req: OwnerRequest, res) => {
     if (state === 'active' && u.suspended) return false;
     if (state === 'invited' && !(u.role === 'admin' && !u.passwordHash && !u.googleId && u.invitedAt)) return false;
     if (org !== null && orgKey(u.org) !== (org === ORG_NONE ? '' : org)) return false;
-    if (search && ![u.name, u.email, u.org].some((v) => (v ?? '').toLowerCase().includes(search))) return false;
+    if (search && ![u.name, u.email, u.org, u.role === 'student' ? u.studentCode : ''].some((v) => (v ?? '').toLowerCase().includes(search))) return false;
     return true;
   });
   rows = [...rows].sort((a, b) => {
@@ -814,6 +816,8 @@ ownerApi.patch('/users/:id', (req: OwnerRequest, res) => {
     if (body.role !== user.role) {
       changes.push(`role ${user.role === 'admin' ? 'faculty' : 'student'} → ${body.role === 'admin' ? 'faculty' : 'student'}`);
       user.role = body.role;
+      // A faculty account turned into a student gets its Student ID now.
+      if (ensureStudentCode(user)) changes.push(`student ID ${user.studentCode}`);
       // A fresh login picks up the new role everywhere.
       endSessions = true;
     }

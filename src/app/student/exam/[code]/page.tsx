@@ -28,7 +28,7 @@ import { RadialTimer } from '@/components/charts/Charts';
 import { Leaderboard } from '@/components/Leaderboard';
 import { OfflineQueuePanel } from '@/components/OfflineQueuePanel';
 import { AnswerInput, ShortcutHint } from '@/components/student/AnswerInput';
-import { AnswerRevealCard } from '@/components/student/AnswerReveal';
+import { AnswerRevealCard, SetItemReveal } from '@/components/student/AnswerReveal';
 import { LanguageToggle, QuestionPrompt, useQuestionTranslation, useStudentLanguage } from '@/components/student/QuestionLanguage';
 import { MobileTimerBar } from '@/components/student/MobileTimerBar';
 import { ReviewList, describeAnswer } from '@/components/student/ReviewList';
@@ -621,7 +621,7 @@ export default function StudentExamPage() {
                   return (
                     <li
                       key={item.questionId}
-                      className="flex flex-wrap items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.02] p-3.5 sm:flex-nowrap"
+                      className="flex flex-wrap items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.02] p-3.5"
                     >
                       <span className="num grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/[0.06] font-display text-[15px] text-white/80">
                         {item.index}
@@ -647,6 +647,10 @@ export default function StudentExamPage() {
                           <Badge tone="neutral">
                             <Hourglass className="h-3 w-3" /> in review
                           </Badge>
+                        ) : mine.grade === 'correct' && mine.awarded < item.points ? (
+                          <Badge tone="amber">
+                            {mine.awarded} / {item.points} pts
+                          </Badge>
                         ) : mine.grade === 'correct' ? (
                           <Badge tone="mint">
                             <CheckCircle2 className="h-3 w-3" /> +{mine.awarded} pts
@@ -658,6 +662,11 @@ export default function StudentExamPage() {
                         )
                       ) : (
                         <Badge tone="neutral">no answer</Badge>
+                      )}
+                      {liveExam && (!mine || (mine.grade !== 'pending' && mine.awarded < item.points)) && (
+                        <div className="basis-full sm:pl-12">
+                          <SetItemReveal examId={exam.id} questionId={item.questionId} lang={lang} />
+                        </div>
                       )}
                     </li>
                   );

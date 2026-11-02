@@ -16,6 +16,11 @@ export interface PublicUser {
   org: string;
   /** Profile photo — populated when the account signed in with Google. */
   avatarUrl?: string;
+  /**
+   * Students only: the readable, permanent Student ID (e.g. PKS26-7K4M9Q),
+   * assigned at sign-up. The internal `id` is never shown as an ID.
+   */
+  studentCode?: string;
 }
 
 export interface Question {
@@ -301,7 +306,7 @@ export interface ReviewItem {
 export interface SetMonitor {
   set: QuestionSet;
   items: { questionId: string; opened: number; answered: number; inProgress: number; missed: number }[];
-  inProgress: { studentId: string; studentName: string; questionId: string; index: number; deadline: number }[];
+  inProgress: { studentId: string; studentName: string; studentCode?: string; questionId: string; index: number; deadline: number }[];
   /** Distinct students who have opened at least one question. */
   students: number;
 }
@@ -339,6 +344,12 @@ export interface Exam {
    * another institute's exams. Absent on sessions created before it existed.
    */
   joinedBy?: string[];
+  /**
+   * Questions whose answers students have been shown (a live question that
+   * locked, or the questions of a set that closed). They can never be delivered
+   * again in this session: a student who missed them has already seen the answer.
+   */
+  answersShown?: string[];
 }
 
 /** Student-facing view of an exam */
@@ -388,6 +399,8 @@ export interface AiEvaluation {
   verdict?: 'correct' | 'partial' | 'incorrect';
   /** Teacher-facing explanation of the score. */
   feedback?: string;
+  /** The same judgement addressed to the student ("You …"), shown to them after the question closes. */
+  studentFeedback?: string;
   strengths?: string[];
   improvements?: string[];
   /** 0–1: how sure the evaluator is that a careful examiner would agree. */
@@ -412,6 +425,8 @@ export interface Response {
   questionId: string;
   studentId: string;
   studentName: string;
+  /** The student's readable Student ID when they answered (staff views). */
+  studentCode?: string;
   answer: string;
   submittedAt: number;
   latencyMs: number;
@@ -518,6 +533,8 @@ export interface StudentTabHiddenEvent {
   examCode: string;
   studentId: string;
   studentName: string;
+  /** Readable Student ID. */
+  studentCode?: string;
   hiddenAt: number;
 }
 

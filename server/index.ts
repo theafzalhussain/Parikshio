@@ -8,6 +8,7 @@ import { cache } from './cache';
 import { initMongo, mongoReady } from './mongo';
 import { seedIfEmpty } from './seed';
 import { db, store } from './store';
+import { backfillStudentCodes, studentCodeOf } from './studentCode';
 import { userFromToken } from './auth';
 import { emitStaff, setIO, examRoom, staffRoom, userRoom, type AxiomIO } from './realtime';
 import { buildExamPublic, getLeaderboard, noteStudentJoin, rearmTimers, startAttemptSweeper } from './engine';
@@ -59,6 +60,9 @@ async function main() {
   await cache.init();
   await initMongo();
   if (!isProd) seedIfEmpty();
+  // Every student account carries a Student ID, including ones from before IDs existed.
+  const studentIds = backfillStudentCodes();
+  if (studentIds) console.log(`[student-id] assigned ${studentIds} Student ID${studentIds === 1 ? '' : 's'}`);
   rearmTimers();
   // Settles self-paced timers that ran out while nobody was looking.
   startAttemptSweeper();
@@ -212,8 +216,10 @@ async function main() {
 
       const exam = db.examByCode(String(payload?.examCode ?? '').slice(0, 16));
       if (!exam) return;
-      // The REST equivalent refuses draft exams for students; match it here.
-      if (exam.status === 'draft' && role !== 'admin') return;
+      // A student may wait in a session's room before its first push: the page
+      // shows "listening for the first push…", and refusing the socket here left
+      // that device deaf to the push until a reload. Nothing reaches the room of
+      // a draft until it goes live, and the lobby lists only live/ended sessions.
       // Faculty watch only their own sessions: another teacher's live answer
       // stream (student names, answers, grades) stays private to that teacher.
       if (role === 'admin' && exam.adminId !== user.id) return;
@@ -257,6 +263,7 @@ async function main() {
         examCode: exam.code,
         studentId: user.id,
         studentName: user.name,
+        ...(studentCodeOf(user.id) ? { studentCode: studentCodeOf(user.id) } : {}),
         hiddenAt: Date.now()
       });
     });

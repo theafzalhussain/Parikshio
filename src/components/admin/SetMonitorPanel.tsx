@@ -145,7 +145,10 @@ export function SetMonitorPanel({
                   className="flex items-center gap-2.5 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2"
                 >
                   <Avatar name={row.studentName} size={26} />
-                  <span className="min-w-0 flex-1 truncate text-[13px] text-white/80">{row.studentName}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] text-white/80">{row.studentName}</span>
+                    {row.studentCode && <span className="block font-mono text-[10.5px] tracking-[0.06em] text-gold-200/70">{row.studentCode}</span>}
+                  </span>
                   <span className="num rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11.5px] text-white/70">Q{row.index}</span>
                   <span className={cx('num w-11 text-right text-[13px] font-medium', left <= 10_000 ? 'text-ember-300' : 'text-white/85')}>
                     {fmtClock(left)}

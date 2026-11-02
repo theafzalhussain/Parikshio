@@ -1,10 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BookOpenCheck, ChevronDown, CircleDot, Lightbulb, Loader2, MinusCircle, Sparkles, ThumbsUp, TrendingUp, XCircle } from 'lucide-react';
 import type { AnswerReveal } from '@shared/types';
 import { Panel } from '@/components/ui/Panel';
-import { cx } from '@/lib/api';
+import { api, ApiError, cx } from '@/lib/api';
 import { describeAnswer } from './ReviewList';
 import type { StudentLang } from './QuestionLanguage';
 
@@ -135,7 +135,9 @@ function RevealBody({ reveal, showHindi }: { reveal: AnswerReveal; showHindi: bo
       {reveal.feedback && (
         <div className="rounded-xl border border-royal-400/25 bg-royal-500/[0.07] px-3.5 py-3">
           <Label en="AI evaluation of your answer" hi="आपके उत्तर का AI मूल्यांकन" showHindi={showHindi} className="flex items-center gap-1.5 text-royal-100/85" />
-          <Bilingual en={reveal.feedback.text} hi={hindi.feedback} showHindi={showHindi} className="mt-1.5 text-[13.5px] leading-relaxed text-white/80" />
+          {reveal.feedback.text && (
+            <Bilingual en={reveal.feedback.text} hi={hindi.feedback} showHindi={showHindi} className="mt-1.5 text-[13.5px] leading-relaxed text-white/80" />
+          )}
           {reveal.feedback.strengths.length > 0 && (
             <div className="mt-3">
               <p className="flex items-center gap-1.5 text-[12px] font-medium text-mint-300/90">
@@ -258,6 +260,79 @@ export function AnswerRevealCard({
         <RevealBody reveal={reveal} showHindi={showHindi} />
       </div>
     </Panel>
+    </div>
+  );
+}
+
+/** Re-asks while the AI model answer or the Hindi version is still being prepared. */
+const PREPARING_POLL_MS = 3_000;
+const PREPARING_MAX_POLLS = 40;
+
+/**
+ * "See the correct answer" for one question of a closed self-paced set. The
+ * answer is fetched only when the student opens it, so a long set does not
+ * load every model answer up front.
+ */
+export function SetItemReveal({ examId, questionId, lang }: { examId: string; questionId: string; lang: StudentLang }) {
+  const [open, setOpen] = useState(false);
+  const [reveal, setReveal] = useState<AnswerReveal | null>(null);
+  const [state, setState] = useState<'idle' | 'loading' | 'ready' | 'none' | 'error'>('idle');
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    let polls = 0;
+    let timer: number | undefined;
+    const fetchOnce = async () => {
+      try {
+        const res = await api<{ reveal: AnswerReveal | null }>('/student/reveal', { method: 'POST', body: { examId, questionId } });
+        if (!alive) return;
+        setReveal(res.reveal);
+        setState(res.reveal ? 'ready' : 'none');
+        if (res.reveal?.preparing && polls < PREPARING_MAX_POLLS) {
+          polls += 1;
+          timer = window.setTimeout(() => void fetchOnce(), PREPARING_POLL_MS);
+        }
+      } catch (err) {
+        if (!alive) return;
+        setState('error');
+        setMessage(err instanceof ApiError ? err.message : 'Could not load the answer right now.');
+      }
+    };
+    setState((s) => (s === 'ready' ? s : 'loading'));
+    void fetchOnce();
+    return () => {
+      alive = false;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [open, examId, questionId]);
+
+  return (
+    <div className="w-full">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="focus-ring inline-flex items-center gap-1.5 rounded-lg px-1 py-0.5 text-[12.5px] font-medium text-mint-300 transition hover:text-mint-200"
+      >
+        <BookOpenCheck className="h-3.5 w-3.5" />
+        {open ? 'Hide the correct answer' : 'See the correct answer'}
+        {lang === 'hi' && <span lang="hi" className="hindi-text text-white/50">· सही उत्तर</span>}
+        <ChevronDown className={cx('h-3.5 w-3.5 transition', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="mt-3">
+          {state === 'loading' && (
+            <p className="flex items-center gap-2 text-[12.5px] text-white/55">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading the answer…
+            </p>
+          )}
+          {state === 'error' && <p className="text-[12.5px] text-amber-300/85">{message}</p>}
+          {state === 'none' && <p className="text-[12.5px] text-white/55">You earned full marks on this question.</p>}
+          {state === 'ready' && reveal && <AnswerRevealCard reveal={reveal} lang={lang} />}
+        </div>
+      )}
     </div>
   );
 }

@@ -99,6 +99,8 @@ import {
 } from '../shared/contact';
 import { DEMO_ACCOUNT_EMAILS, isDemoAccountEmail } from './demoAccounts';
 import { persist, unpersist, mongoReady } from './mongo';
+import { ensureStudentCode, studentCodesFor } from './studentCode';
+import { buildReveals } from './reveal';
 import { cache, cacheKeys } from './cache';
 import type { Exam, Response as ExamResponse } from '../shared/types';
 
@@ -532,13 +534,15 @@ api.post('/auth/register', registerLimiter, asyncRoute(async (req, res) => {
     tokenVersion: 0,
     lastLoginAt: Date.now()
   };
+  // Assigned right before the push (no await in between), so two sign-ups cannot draw the same ID.
+  ensureStudentCode(user);
   store.users.push(user);
   persist('users', asPersistable(user));
   recordAudit({
     action: 'auth.register',
     actorId: user.id,
     actorName: user.name,
-    detail: `role=${role} org=${org}`,
+    detail: `role=${role} org=${org} studentId=${user.studentCode ?? '-'}`,
     ip
   });
   res.status(201).json(issueSession(user));
@@ -640,6 +644,7 @@ api.post('/auth/google', googleLimiter, asyncRoute(async (req, res) => {
       emailVerified,
       tokenVersion: 0
     };
+    ensureStudentCode(user);
     store.users.push(user);
     created = true;
   } else {
@@ -647,6 +652,8 @@ api.post('/auth/google', googleLimiter, asyncRoute(async (req, res) => {
     user.googleId ??= googleId;
     if (picture) user.avatarUrl = picture;
     if (emailVerified) user.emailVerified = true;
+    // A student account from before Student IDs existed gets one now at the latest.
+    ensureStudentCode(user);
   }
 
   user.lastLoginAt = Date.now();
@@ -1632,6 +1639,12 @@ api.get('/exams/:id', authenticate, requireRole('admin'), (req: AuthedRequest, r
     (r) => !recentIds.has(r.id) && (r.grade === 'pending' || r.ai?.status === 'failed' || r.ai?.needsReview)
   );
   const questionById = new Map(store.questions.filter((q) => exam.questionIds.includes(q.id)).map((q) => [q.id, q]));
+  // Student IDs of everyone in the room, answered or not (answers from before IDs existed included).
+  const studentCodes = studentCodesFor([
+    ...(exam.joinedBy ?? []),
+    ...all.map((r) => r.studentId),
+    ...store.attempts.filter((a) => a.examId === exam.id).map((a) => a.studentId)
+  ]);
   res.json({
     exam,
     counts: { responses: all.length, students: new Set(all.map((r) => r.studentId)).size },
@@ -1641,10 +1654,12 @@ api.get('/exams/:id', authenticate, requireRole('admin'), (req: AuthedRequest, r
     settings: examSettings(exam),
     leaderboard: getLeaderboard(exam.id),
     grading: gradingStatus(),
+    studentCodes,
     responses: [...recent, ...outstanding].map((r) => {
       const question = questionById.get(r.questionId) ?? db.questionById(r.questionId);
       return {
         ...r,
+        ...(r.studentCode || studentCodes[r.studentId] ? { studentCode: r.studentCode ?? studentCodes[r.studentId] } : {}),
         questionPrompt: question?.prompt ?? '',
         questionType: question?.type ?? 'mcq',
         maxPoints: question?.points ?? 0
@@ -2139,6 +2154,38 @@ api.post('/student/translate', authenticate, requireRole('student'), translateLi
     });
   }
 }));
+
+/**
+ * The answer to one closed question of this session, for a student who lost
+ * marks on it (or never answered). Used by the closed self-paced set list; the
+ * live question's answer already travels in the exam view. Only questions whose
+ * answers were released (a lock, or a closed set) and that are not open for
+ * anyone again qualify, and only for students who are part of the session.
+ */
+const revealLimiter = createRateLimiter({
+  name: 'student-reveal',
+  windowMs: 60_000,
+  max: 120,
+  keyFor: (req) => (req as AuthedRequest).user?.id ?? clientIp(req),
+  message: 'Too many requests. Wait a minute and try again.'
+});
+
+api.post('/student/reveal', authenticate, requireRole('student'), revealLimiter, (req: AuthedRequest, res) => {
+  const exam = db.examById(String(req.body?.examId ?? ''));
+  const questionId = String(req.body?.questionId ?? '');
+  const me = req.user!.id;
+  const member =
+    !!exam &&
+    (exam.joinedBy?.includes(me) ||
+      db.responsesByExam(exam.id).some((r) => r.studentId === me) ||
+      store.attempts.some((a) => a.examId === exam.id && a.studentId === me));
+  // One answer for "no such session", "not yours" and "not released", so nothing can be probed.
+  if (!exam || exam.status !== 'live' || !member || !exam.answersShown?.includes(questionId) || resultSealed(exam, questionId)) {
+    return res.status(404).json({ error: 'This answer is not available', code: 'not-available' });
+  }
+  const [reveal] = buildReveals(exam, me, [questionId]);
+  res.json({ reveal: reveal ?? null });
+});
 
 api.post('/student/answers', authenticate, requireRole('student'), asyncRoute(async (req: AuthedRequest, res) => {
   const { examId, questionId, answer, offline } = req.body ?? {};

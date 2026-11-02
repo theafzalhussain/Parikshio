@@ -214,10 +214,19 @@ let feedbackTimer: NodeJS.Timeout | null = null;
 
 const feedbackStamp = (r: Response) => r.ai?.completedAt ?? r.ai?.requestedAt ?? 0;
 
-/** The AI's words about this answer, when they still describe its current score. */
+/**
+ * The AI's words about this answer, when they still describe its current score.
+ * Students get the version written to them ("You …"); the teacher's note
+ * ("The student …") is never shown. Older evaluations made before that version
+ * existed show only their strengths and improvements.
+ */
 function aiFeedback(r: Response | undefined) {
-  if (!r?.ai || r.ai.status !== 'done' || r.gradedBy !== 'ai' || !r.ai.feedback) return null;
-  return { text: r.ai.feedback, strengths: r.ai.strengths ?? [], improvements: r.ai.improvements ?? [] };
+  if (!r?.ai || r.ai.status !== 'done' || r.gradedBy !== 'ai') return null;
+  const text = r.ai.studentFeedback?.trim() ?? '';
+  const strengths = r.ai.strengths ?? [];
+  const improvements = r.ai.improvements ?? [];
+  if (!text && !strengths.length && !improvements.length) return null;
+  return { text, strengths, improvements };
 }
 
 function cachedFeedbackHindi(r: Response): FeedbackHindi | null {
@@ -266,8 +275,9 @@ async function flushFeedback(): Promise<void> {
       const layout = chunk.map(({ response }) => {
         const fb = aiFeedback(response)!;
         const start = texts.length;
-        texts.push(fb.text, ...fb.strengths, ...fb.improvements);
-        return { response, stamp: feedbackStamp(response), start, strengths: fb.strengths.length, improvements: fb.improvements.length };
+        // DeepL is never sent an empty text; a missing sentence comes back empty.
+        texts.push(fb.text || '-', ...fb.strengths, ...fb.improvements);
+        return { response, stamp: feedbackStamp(response), start, hasText: !!fb.text, strengths: fb.strengths.length, improvements: fb.improvements.length };
       });
       try {
         const translated = await translateExamTexts(
@@ -277,7 +287,8 @@ async function flushFeedback(): Promise<void> {
         );
         for (const row of layout) {
           let at = row.start;
-          const feedback = translated[at++] ?? '';
+          const translatedText = translated[at++] ?? '';
+          const feedback = row.hasText ? translatedText : '';
           const strengths = translated.slice(at, at + row.strengths);
           at += row.strengths;
           const improvements = translated.slice(at, at + row.improvements);
@@ -367,7 +378,7 @@ export function buildReveals(exam: Exam, studentId: string, questionIds: string[
     if (answerSource === 'ai' && model?.hi) hindi.answers = [model.hi];
     if (explanation && kit?.hi?.explanation) hindi.explanation = kit.hi.explanation;
     if (feedback && feedbackHi) {
-      hindi.feedback = feedbackHi.feedback;
+      if (feedbackHi.feedback) hindi.feedback = feedbackHi.feedback;
       hindi.strengths = feedbackHi.strengths;
       hindi.improvements = feedbackHi.improvements;
     }

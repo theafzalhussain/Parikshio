@@ -34,6 +34,7 @@ import { persist, unpersist } from './mongo';
 import { db, examCode, store, uid } from './store';
 import { emitExam, emitStaff, emitUser, examRoom, ioInstance } from './realtime';
 import { buildReveals, onRevealReady, prepareReveal, warmReveal } from './reveal';
+import { studentCodeOf } from './studentCode';
 import {
   broadcastGradeChange,
   forgetAiWork,
@@ -80,6 +81,17 @@ function rememberWindow(exam: Exam, questionId: string, pushedAt: number, endsAt
 function persistExam(exam: Exam): void {
   persist('exams', exam as unknown as { id: string } & Record<string, unknown>);
 }
+
+/** Records that students have been shown these answers (the caller persists the exam). */
+function markAnswersShown(exam: Exam, questionIds: string[]): void {
+  const shown = new Set(exam.answersShown ?? []);
+  const before = shown.size;
+  questionIds.forEach((id) => shown.add(id));
+  if (shown.size !== before) exam.answersShown = [...shown];
+}
+
+const ANSWER_SHOWN_ERROR =
+  'Students have already been shown the answer to this question, so it cannot be pushed again in this session.';
 
 /**
  * Live questions whose answer a student may now be shown: the one on screen
@@ -385,6 +397,7 @@ export function setMonitor(exam: Exam): SetMonitor | null {
       .map((a) => ({
         studentId: a.studentId,
         studentName: a.studentName,
+        ...(studentCodeOf(a.studentId) ? { studentCode: studentCodeOf(a.studentId) } : {}),
         questionId: a.questionId,
         index: set.items.findIndex((item) => item.questionId === a.questionId) + 1,
         deadline: a.deadline
@@ -417,6 +430,8 @@ function closeSetInPlace(exam: Exam, now: number): void {
   if (!set || set.closed) return;
   set.closed = true;
   set.closedAt = now;
+  // Results (and answers) unseal with the set, so none of its questions can be delivered again.
+  markAnswersShown(exam, set.items.map((item) => item.questionId));
   for (const attempt of db.attemptsBySet(exam.id, set.id)) {
     if (attempt.status !== 'open') continue;
     attempt.deadline = Math.min(attempt.deadline, now);
@@ -436,9 +451,25 @@ export async function pushSet(
   const now = Date.now();
   const items: QuestionSetItem[] = [];
   const seen = new Set<string>();
+  // The live question still on screen would be locked (and its answer shown) by this push.
+  const onScreen = exam.current && !exam.current.locked ? exam.current.questionId : null;
+  let blocked = 0;
   for (const entry of entries) {
     const question = db.questionById(String(entry.questionId));
     if (!question) return { ok: false, error: 'One of the selected questions no longer exists' };
+    if (exam.answersShown?.includes(question.id) || question.id === onScreen) blocked += 1;
+  }
+  if (blocked) {
+    return {
+      ok: false,
+      error:
+        blocked === 1
+          ? 'One of the selected questions has already had its answer shown to students (or is on screen now), so it cannot be pushed again. Untick it and push the rest.'
+          : `${blocked} of the selected questions have already had their answers shown to students (or are on screen now), so they cannot be pushed again. Untick them and push the rest.`
+    };
+  }
+  for (const entry of entries) {
+    const question = db.questionById(String(entry.questionId))!;
     if (seen.has(question.id)) continue;
     seen.add(question.id);
     items.push({
@@ -688,10 +719,15 @@ export async function pushQuestion(
   // `endedAt` set, leaving the session in a state no screen renders correctly.
   if (exam.status === 'ended') return { ok: false, error: 'This session has already ended' };
 
+  // Re-pushing the question that is still running only restarts its timer; any
+  // other question whose answer students have seen stays closed for good.
+  const extending = exam.current?.questionId === questionId && !exam.current.locked;
+  if (!extending && exam.answersShown?.includes(questionId)) return { ok: false, error: ANSWER_SHOWN_ERROR };
+
   // Close the outgoing question properly instead of abandoning it: without this
   // it stays unlocked forever, never emits its final leaderboard, and in-flight
   // answers are rejected as "no longer active".
-  if (exam.current && !exam.current.locked) lockQuestion(exam);
+  if (exam.current && !exam.current.locked) lockQuestion(exam, { extending });
 
   const now = Date.now();
   // A live push replaces a self-paced set: everyone moves to the same question.
@@ -735,7 +771,11 @@ export async function pushQuestion(
   return { ok: true };
 }
 
-export function lockQuestion(exam: Exam): void {
+/**
+ * Closes the live question. `extending` is a re-push of the same running
+ * question: it only restarts the timer, so no answer is revealed.
+ */
+export function lockQuestion(exam: Exam, options: { extending?: boolean } = {}): void {
   if (!exam.current || exam.current.locked) return;
   // A lock before the timer runs out closes the question now. Answers are
   // checked against `endsAt` (plus the in-flight grace), and results unseal at
@@ -747,12 +787,13 @@ export function lockQuestion(exam: Exam): void {
     rememberWindow(exam, exam.current.questionId, exam.current.pushedAt, now);
   }
   exam.current.locked = true;
+  if (!options.extending) markAnswersShown(exam, [exam.current.questionId]);
   persistExam(exam);
   void cache.delPrefix(cacheKeys.examPrefix(exam.id));
   emitExam(exam.code, 'question:locked', { examId: exam.id, questionId: exam.current.questionId });
   emitBoard(exam);
   // Students who lost marks get the answer; its slow parts are prepared now.
-  prepareReveal(exam, exam.current.questionId);
+  if (!options.extending) prepareReveal(exam, exam.current.questionId);
   const timer = lockTimers.get(exam.id);
   if (timer) clearTimeout(timer);
   lockTimers.delete(exam.id);
@@ -987,6 +1028,7 @@ export function submitAnswer(exam: Exam, student: PublicUser, payload: SubmitPay
     questionId: question.id,
     studentId: student.id,
     studentName: student.name,
+    ...(student.studentCode ? { studentCode: student.studentCode } : {}),
     answer: payload.answer,
     submittedAt: answeredAt,
     // In a set, speed is measured from when this student opened the question.

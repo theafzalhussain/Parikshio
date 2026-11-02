@@ -120,6 +120,7 @@ export function publicUser(u: {
   role: Role;
   org: string;
   avatarUrl?: string;
+  studentCode?: string;
 }): PublicUser {
   return {
     id: u.id,
@@ -127,7 +128,8 @@ export function publicUser(u: {
     email: u.email,
     role: u.role,
     org: u.org === LEGACY_PLACEHOLDER_ORG ? '' : u.org,
-    ...(u.avatarUrl ? { avatarUrl: u.avatarUrl } : {})
+    ...(u.avatarUrl ? { avatarUrl: u.avatarUrl } : {}),
+    ...(u.role === 'student' && u.studentCode ? { studentCode: u.studentCode } : {})
   };
 }
 

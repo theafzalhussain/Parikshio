@@ -187,12 +187,14 @@ function limitByLength(
   if (result.score <= cap) return { result };
   const max = result.maxPoints;
   const note = `Score limited to ${cap}/${max}: the answer has ${words} word${words === 1 ? '' : 's'}, and full marks need at least ${required}.`;
+  const studentNote = `Your answer has ${words} word${words === 1 ? '' : 's'}; full marks need at least ${required}.`;
   return {
     result: {
       ...result,
       score: cap,
       verdict: cap >= max ? 'correct' : cap <= 0 ? 'incorrect' : 'partial',
       feedback: `${result.feedback} ${note}`.slice(0, MAX_FEEDBACK_CHARS),
+      studentFeedback: result.studentFeedback ? `${result.studentFeedback} ${studentNote}`.slice(0, MAX_FEEDBACK_CHARS) : '',
       improvements: [...result.improvements.slice(0, MAX_IMPROVEMENTS - 1), `Develop the answer to at least ${required} words`]
     },
     lengthCap: { words, requiredWords: required, uncappedScore: result.score }
@@ -284,6 +286,7 @@ function applyResult(response: Response, raw: EvaluationResult, started: number,
     maxPoints: result.maxPoints,
     verdict: result.verdict,
     feedback: result.feedback,
+    ...(result.studentFeedback ? { studentFeedback: result.studentFeedback } : {}),
     strengths: result.strengths,
     improvements: result.improvements,
     confidence: result.confidence,

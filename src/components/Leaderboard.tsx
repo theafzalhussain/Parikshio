@@ -15,12 +15,15 @@ export function Leaderboard({
   entries,
   highlightId,
   compact = false,
-  max = 8
+  max = 8,
+  studentCodes
 }: {
   entries: LeaderboardEntry[];
   highlightId?: string;
   compact?: boolean;
   max?: number;
+  /** Faculty views only: Student IDs by account id, shown under each name. */
+  studentCodes?: Record<string, string>;
 }) {
   if (!entries.length) {
     return (
@@ -65,6 +68,9 @@ export function Leaderboard({
                   </span>
                 )}
               </p>
+              {studentCodes?.[entry.studentId] && (
+                <p className="mt-0.5 font-mono text-[11px] tracking-[0.06em] text-gold-200/75">{studentCodes[entry.studentId]}</p>
+              )}
               {!compact && (
                 <p className="mt-0.5 text-[12px] text-white/50">
                   {entry.correct}/{entry.answered} correct · avg {fmtMs(entry.avgLatencyMs)}

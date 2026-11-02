@@ -155,7 +155,7 @@ export function UsersSection({
         <SearchBox
           value={search}
           onChange={setSearch}
-          placeholder={browsingOrgs ? 'Search organizations' : 'Search name, email or institute'}
+          placeholder={browsingOrgs ? 'Search organizations' : 'Search name, email, institute or Student ID'}
           label={browsingOrgs ? 'Search organizations' : 'Search accounts'}
         />
         <div className="sm:ml-auto sm:w-48">
@@ -341,6 +341,9 @@ function UserRowCard({ user, onOpen }: { user: OwnerUserRow; onOpen: () => void 
             {user.invitePending && <Badge tone="amber">invite sent</Badge>}
           </span>
           <span className="mt-0.5 block truncate text-[13px] text-white/55">{user.email}</span>
+          {user.studentCode && (
+            <span className="mt-0.5 block font-mono text-[12px] tracking-[0.06em] text-gold-200/80">ID {user.studentCode}</span>
+          )}
           {user.org && <span className="block truncate text-[12.5px] text-white/40">{user.org}</span>}
         </span>
       </span>
@@ -426,7 +429,13 @@ function UserPanel({ userId, onClose, onChanged }: { userId: string; onClose: ()
 
   return (
     <>
-      <Modal open onClose={onClose} title={data?.name ?? 'Account'} description={data?.email} width="max-w-3xl">
+      <Modal
+        open
+        onClose={onClose}
+        title={data?.name ?? 'Account'}
+        description={data ? `${data.email}${data.studentCode ? ` · Student ID ${data.studentCode}` : ''}` : undefined}
+        width="max-w-3xl"
+      >
         {error && !data && <ErrorNote message={error} onRetry={reload} />}
         {!data && !error && <Loading label="Loading the account" />}
         {data && (

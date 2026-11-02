@@ -43,6 +43,8 @@ export interface OwnerUserRow {
   email: string;
   role: Role;
   org: string;
+  /** Students only: the readable Student ID. */
+  studentCode?: string;
   createdAt: number;
   lastLoginAt: number | null;
   /** Signs in with Google. */
