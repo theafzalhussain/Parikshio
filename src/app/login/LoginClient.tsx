@@ -119,6 +119,12 @@ export function LoginClient({ initialRole, next }: { initialRole: AuthRole; next
   // The Google sign-in code is not part of the page; fetch it while the person types.
   useEffect(() => preloadGoogleSignIn(), []);
 
+  // Download the dashboard this tab opens while the person types, so the page
+  // switch after a successful log-in is instant instead of a second wait.
+  useEffect(() => {
+    router.prefetch(landingFor(role === 'faculty' ? 'admin' : 'student', next));
+  }, [role, next, router]);
+
   useEffect(() => {
     if (!showDemoAccounts) return;
     let active = true;

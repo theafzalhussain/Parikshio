@@ -32,7 +32,8 @@ import { config } from './config';
 import { cache, cacheKeys } from './cache';
 import { persist, unpersist } from './mongo';
 import { db, examCode, store, uid } from './store';
-import { emitExam, emitStaff, examRoom, ioInstance } from './realtime';
+import { emitExam, emitStaff, emitUser, examRoom, ioInstance } from './realtime';
+import { buildReveals, onRevealReady, prepareReveal, warmReveal } from './reveal';
 import {
   broadcastGradeChange,
   forgetAiWork,
@@ -79,6 +80,32 @@ function rememberWindow(exam: Exam, questionId: string, pushedAt: number, endsAt
 function persistExam(exam: Exam): void {
   persist('exams', exam as unknown as { id: string } & Record<string, unknown>);
 }
+
+/**
+ * Live questions whose answer a student may now be shown: the one on screen
+ * once it has locked, and the one pushed before it (a teacher often presses
+ * "Push next" straight after locking). Newest first.
+ */
+function revealCandidates(exam: Exam): string[] {
+  const ids: string[] = [];
+  const current = exam.current;
+  if (current?.locked) ids.push(current.questionId);
+  const pushed = [...(windowLedger.get(exam.id)?.keys() ?? [])];
+  for (let i = pushed.length - 1; i >= 0; i -= 1) {
+    if (pushed[i] === current?.questionId) continue;
+    ids.push(pushed[i]);
+    break;
+  }
+  return ids;
+}
+
+// A reveal's slow parts (AI model answer, Hindi) finished: refresh the views that show it.
+onRevealReady((examId, studentId) => {
+  const exam = db.examById(examId);
+  if (!exam || exam.status !== 'live') return;
+  if (studentId) emitUser(studentId, 'exam:state', buildExamPublic(exam, studentId));
+  else void broadcastStudentState(exam);
+});
 
 function persistAttempt(attempt: QuestionAttempt): void {
   persist('attempts', attempt as unknown as { id: string } & Record<string, unknown>);
@@ -273,6 +300,7 @@ export function buildExamPublic(exam: Exam, studentId?: string): ExamPublic {
       };
     }
   }
+  const reveals = studentId && exam.status === 'live' ? buildReveals(exam, studentId, revealCandidates(exam)) : [];
   return {
     id: exam.id,
     code: exam.code,
@@ -285,6 +313,7 @@ export function buildExamPublic(exam: Exam, studentId?: string): ExamPublic {
     myAnswers,
     showLeaderboard: studentsSeeLeaderboard(exam),
     ...(exam.status === 'ended' && studentId ? { review: buildReview(exam, studentId) } : {}),
+    ...(reveals.length ? { reveals } : {}),
     endedAt: exam.endedAt,
     translationAvailable: config.deepl.enabled
   };
@@ -683,6 +712,9 @@ export async function pushQuestion(
     emitExam(exam.code, 'question:pushed', { examId: exam.id, active });
     emitExam(exam.code, 'time:sync', { serverTime: Date.now() });
   }
+  // A written question without a key gets its AI model answer written now, so
+  // the reveal is ready at the lock. It only reaches students after the lock.
+  warmReveal(exam, question);
   if (hadOpenSet) {
     await broadcastStudentState(exam);
     emitSetProgress(exam);
@@ -719,6 +751,8 @@ export function lockQuestion(exam: Exam): void {
   void cache.delPrefix(cacheKeys.examPrefix(exam.id));
   emitExam(exam.code, 'question:locked', { examId: exam.id, questionId: exam.current.questionId });
   emitBoard(exam);
+  // Students who lost marks get the answer; its slow parts are prepared now.
+  prepareReveal(exam, exam.current.questionId);
   const timer = lockTimers.get(exam.id);
   if (timer) clearTimeout(timer);
   lockTimers.delete(exam.id);

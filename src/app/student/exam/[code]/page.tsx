@@ -28,6 +28,7 @@ import { RadialTimer } from '@/components/charts/Charts';
 import { Leaderboard } from '@/components/Leaderboard';
 import { OfflineQueuePanel } from '@/components/OfflineQueuePanel';
 import { AnswerInput, ShortcutHint } from '@/components/student/AnswerInput';
+import { AnswerRevealCard } from '@/components/student/AnswerReveal';
 import { LanguageToggle, QuestionPrompt, useQuestionTranslation, useStudentLanguage } from '@/components/student/QuestionLanguage';
 import { MobileTimerBar } from '@/components/student/MobileTimerBar';
 import { ReviewList, describeAnswer } from '@/components/student/ReviewList';
@@ -166,6 +167,8 @@ export default function StudentExamPage() {
           myAnswers: { ...prev.myAnswers, [payload.questionId]: { ...mine, grade: payload.grade, awarded: payload.awarded } }
         };
       });
+      // The answer (and the AI's comments) appear when the late grade is short of full marks.
+      void load();
     };
 
     socket.on('exam:state', onState);
@@ -678,6 +681,12 @@ export default function StudentExamPage() {
 
   /* ── live question ──────────────────────────────────────── */
   const isObjective = question?.type === 'mcq' || question?.type === 'truefalse';
+  // After a lock, students who lost marks see the answer; the previous question's stays folded below.
+  const reveals = exam.reveals ?? [];
+  const currentReveal = active.locked ? reveals.find((r) => r.questionId === active.questionId) ?? null : null;
+  const previousReveal = reveals.find((r) => r.questionId !== active.questionId) ?? null;
+  const fullMarks = !!myAnswer && myAnswer.grade !== 'pending' && myAnswer.awarded >= question!.points;
+  const partialMarks = !!myAnswer && myAnswer.grade === 'correct' && myAnswer.awarded < question!.points;
 
   return (
     <StudentShell maxWidth="max-w-6xl">
@@ -802,7 +811,13 @@ export default function StudentExamPage() {
                     <div className="flex flex-1 items-center gap-2.5 rounded-xl border border-mint-400/25 bg-mint-500/[0.08] px-3.5 py-3">
                       <CircleCheck className="h-4 w-4 shrink-0 text-mint-300" />
                       <p className="text-[13.5px] text-mint-100">
-                        Answer recorded. Result unlocks when the question closes.
+                        {!active.locked
+                          ? 'Answer recorded. Result unlocks when the question closes.'
+                          : myAnswer!.grade === 'pending'
+                            ? 'Question closed. Your answer is being checked — if you lose marks, the correct answer appears below.'
+                            : fullMarks
+                              ? 'Question closed. Full marks — well done!'
+                              : 'Question closed. The correct answer is below.'}
                       </p>
                     </div>
                   ) : queued ? (
@@ -822,7 +837,9 @@ export default function StudentExamPage() {
                     <div className="flex flex-1 items-center gap-2.5 rounded-xl border border-ember-500/30 bg-ember-500/[0.08] px-4 py-3">
                       <Lock className="h-4 w-4 shrink-0 text-ember-300" />
                       <p className="text-[13.5px] text-ember-200">
-                        Time is up for this question. Wait for the next push.
+                        {currentReveal
+                          ? 'Time is up for this question. The correct answer is below.'
+                          : 'Time is up for this question. Wait for the next push.'}
                       </p>
                     </div>
                   ) : (
@@ -858,8 +875,12 @@ export default function StudentExamPage() {
                   </p>
                 </div>
                 {myAnswer.grade !== 'pending' ? (
-                  <Badge tone={myAnswer.grade === 'correct' ? 'mint' : 'ember'}>
-                    {myAnswer.grade === 'correct' ? `+${myAnswer.awarded} pts` : 'incorrect'}
+                  <Badge tone={partialMarks ? 'amber' : myAnswer.grade === 'correct' ? 'mint' : 'ember'}>
+                    {partialMarks
+                      ? `${myAnswer.awarded} / ${question!.points} pts`
+                      : myAnswer.grade === 'correct'
+                        ? `+${myAnswer.awarded} pts`
+                        : 'incorrect'}
                   </Badge>
                 ) : (
                   <Badge tone="neutral">
@@ -868,6 +889,8 @@ export default function StudentExamPage() {
                 )}
               </Panel>
             )}
+
+            {currentReveal && <AnswerRevealCard key={currentReveal.questionId} reveal={currentReveal} lang={lang} />}
 
             {!answered && queued && (
               <Panel className="flex flex-wrap items-center justify-between gap-3 p-4">
@@ -884,6 +907,8 @@ export default function StudentExamPage() {
                 </Badge>
               </Panel>
             )}
+
+            {previousReveal && <AnswerRevealCard key={previousReveal.questionId} reveal={previousReveal} lang={lang} collapsible />}
           </div>
 
           {/* side column */}

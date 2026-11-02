@@ -18,6 +18,41 @@ const FOCUSABLE = [
 const openStack: symbol[] = [];
 
 /**
+ * The page scroll lock is shared by every open overlay. Each dialog used to
+ * save and restore `body.style.overflow` itself, which only works when dialogs
+ * close newest-first. When a confirmation and the panel under it closed in the
+ * same render (delete → close both), the confirmation restored the "hidden"
+ * value it had saved after the panel already unlocked, and the page stayed
+ * unscrollable until a reload. A count makes the order irrelevant: the first
+ * overlay locks, the last one to close unlocks.
+ */
+let scrollLocks = 0;
+let savedOverflow = '';
+let savedPaddingRight = '';
+
+function lockPageScroll() {
+  scrollLocks += 1;
+  if (scrollLocks > 1) return;
+  const { body } = document;
+  savedOverflow = body.style.overflow;
+  savedPaddingRight = body.style.paddingRight;
+  // Replacing the scrollbar with equivalent padding stops the 10px content
+  // jump you otherwise get the moment the overlay opens.
+  const scrollbar = window.innerWidth - document.documentElement.clientWidth;
+  body.style.overflow = 'hidden';
+  if (scrollbar > 0) body.style.paddingRight = `${scrollbar}px`;
+}
+
+function unlockPageScroll() {
+  if (scrollLocks === 0) return;
+  scrollLocks -= 1;
+  if (scrollLocks > 0) return;
+  const { body } = document;
+  body.style.overflow = savedOverflow;
+  body.style.paddingRight = savedPaddingRight;
+}
+
+/**
  * Behaviour every overlay in the app needs and browsers do not give you for
  * free with plain `<div>`s:
  *
@@ -81,14 +116,7 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(
 
     document.addEventListener('keydown', onKeyDown);
 
-    // Replacing the scrollbar with equivalent padding stops the 10px content
-    // jump you otherwise get the moment the overlay opens.
-    const { body } = document;
-    const prevOverflow = body.style.overflow;
-    const prevPadding = body.style.paddingRight;
-    const scrollbar = window.innerWidth - document.documentElement.clientWidth;
-    body.style.overflow = 'hidden';
-    if (scrollbar > 0) body.style.paddingRight = `${scrollbar}px`;
+    lockPageScroll();
 
     // Wait a frame so the overlay is painted before we reach into it.
     const focusTimer = window.setTimeout(() => {
@@ -100,8 +128,7 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(
       const at = openStack.indexOf(id);
       if (at >= 0) openStack.splice(at, 1);
       document.removeEventListener('keydown', onKeyDown);
-      body.style.overflow = prevOverflow;
-      body.style.paddingRight = prevPadding;
+      unlockPageScroll();
       window.clearTimeout(focusTimer);
       restoreTo.current?.focus?.();
     };

@@ -35,11 +35,47 @@ export function hashPasswordAsync(plain: string): Promise<string> {
 
 export async function verifyPasswordAsync(plain: string, hash: string): Promise<boolean> {
   if (!hash) return false;
+  const proof = verifiedProof(plain, hash);
+  const known = verifiedLogins.get(hash);
+  if (known && known.expiresAt > Date.now() && crypto.timingSafeEqual(known.proof, proof)) return true;
   try {
-    return await bcrypt.compare(plain, hash);
+    const ok = await bcrypt.compare(plain, hash);
+    if (ok) rememberVerified(hash, proof);
+    return ok;
   } catch {
     return false;
   }
+}
+
+/*
+ * Fast repeat sign-ins. bcrypt costs a few hundred milliseconds per check, and
+ * far more on a small shared host CPU, so every log-in waited on it. Once a
+ * password has passed bcrypt, an HMAC of it (keyed with a random secret that
+ * exists only in this process's memory, never stored or logged) is kept against
+ * that exact hash. The next correct sign-in matches the HMAC in microseconds.
+ *
+ * Nothing gets weaker: a wrong password never matches and still pays the full
+ * bcrypt check, so guessing is exactly as slow as before. Changing or resetting
+ * a password writes a new hash, which no entry matches. The plain password is
+ * never kept.
+ */
+const VERIFIED_TTL_MS = 12 * 60 * 60 * 1000;
+const VERIFIED_MAX = 5000;
+const verifiedKey = crypto.randomBytes(32);
+const verifiedLogins = new Map<string, { proof: Buffer; expiresAt: number }>();
+
+function verifiedProof(plain: string, hash: string): Buffer {
+  return crypto.createHmac('sha256', verifiedKey).update(hash).update('\0').update(plain).digest();
+}
+
+function rememberVerified(hash: string, proof: Buffer) {
+  // Re-inserting keeps the Map in least-recently-verified order, so the oldest goes first.
+  verifiedLogins.delete(hash);
+  if (verifiedLogins.size >= VERIFIED_MAX) {
+    const oldest = verifiedLogins.keys().next().value;
+    if (oldest !== undefined) verifiedLogins.delete(oldest);
+  }
+  verifiedLogins.set(hash, { proof, expiresAt: Date.now() + VERIFIED_TTL_MS });
 }
 
 /** A real hash of a random secret: comparing against it costs the same time as a real check. */

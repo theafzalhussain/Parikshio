@@ -14,6 +14,7 @@ import { cache, cacheKeys } from './cache';
 import { persist } from './mongo';
 import { db, store } from './store';
 import { emitExam, emitStaff, emitUser } from './realtime';
+import { noteLateGrade } from './reveal';
 import { resultSealed, studentsSeeLeaderboard } from './sessionRules';
 import {
   coolingModels,
@@ -228,6 +229,8 @@ export function broadcastGradeChange(response: Response, final = true): void {
       grade: response.grade,
       awarded: response.awarded
     });
+    // A student answering in Hindi also gets the AI's comments in Hindi.
+    noteLateGrade(response);
   }
 }
 

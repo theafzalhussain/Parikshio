@@ -11,6 +11,7 @@ import {
   CircleStop,
   Copy,
   EyeOff,
+  Filter,
   GraduationCap,
   Layers,
   Lock,
@@ -91,6 +92,10 @@ interface SyncedClassroomStudent {
 
 const isSubjectiveType = (type: QuestionType) => type === 'short' || type === 'long';
 
+/** Same order and labels as the question bank's type filter. */
+const QUEUE_TYPES: QuestionType[] = ['mcq', 'truefalse', 'fill', 'short', 'long'];
+const queueTypeLabel = (t: 'all' | QuestionType) => (t === 'all' ? 'All' : t === 'truefalse' ? 'T/F' : t.toUpperCase());
+
 /** Rows the "AI-grade pending" bulk action would pick up. */
 const awaitsAi = (r: FeedRow) =>
   isSubjectiveType(r.questionType) &&
@@ -162,6 +167,8 @@ export default function ControlRoomPage() {
   const [bulkPushOpen, setBulkPushOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [removeBusy, setRemoveBusy] = useState(false);
+  /** Queue type filter. Only narrows what is listed; Push next still follows the session order. */
+  const [typeFilter, setTypeFilter] = useState<'all' | QuestionType>('all');
   const detailRef = useRef<Detail | null>(null);
   detailRef.current = detail;
 
@@ -344,6 +351,24 @@ export default function ControlRoomPage() {
       .map((id) => detail.questions.find((q) => q.id === id))
       .filter((q): q is Question => !!q);
   }, [detail]);
+
+  /** Queue rows under the type filter, each keeping its number in the session order. */
+  const visibleQueue = useMemo(
+    () =>
+      queued
+        .map((q, i) => ({ q, position: i + 1 }))
+        .filter(({ q }) => typeFilter === 'all' || q.type === typeFilter),
+    [queued, typeFilter]
+  );
+  const typeCounts = useMemo(() => {
+    const counts: Record<'all' | QuestionType, number> = { all: queued.length, mcq: 0, truefalse: 0, fill: 0, short: 0, long: 0 };
+    queued.forEach((q) => {
+      counts[q.type] += 1;
+    });
+    return counts;
+  }, [queued]);
+  const visibleIds = visibleQueue.map(({ q }) => q.id);
+  const visibleSelected = visibleIds.filter((id) => selected.includes(id)).length;
 
   const pushedIds = new Set((detail?.active ? [detail.active.questionId] : []).concat([]));
 
@@ -773,20 +798,59 @@ export default function ControlRoomPage() {
                   sub="Push one question to everyone with its own timer, or tick several and push them together as a self-paced set."
                 />
 
+                {queued.length > 0 && (
+                  <div className="mt-4 flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter questions by type">
+                    <span className="mr-1 hidden items-center gap-1.5 text-[12px] uppercase tracking-[0.12em] text-white/40 sm:flex">
+                      <Filter className="h-3 w-3" /> type
+                    </span>
+                    {(['all', ...QUEUE_TYPES] as const).map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setTypeFilter(t)}
+                        aria-pressed={typeFilter === t}
+                        disabled={t !== 'all' && typeCounts[t] === 0}
+                        title={t === 'all' ? `All ${typeCounts.all} questions` : `${typeCounts[t]} ${typeLabel(t)} question${typeCounts[t] === 1 ? '' : 's'}`}
+                        className={cx(
+                          'rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium transition disabled:cursor-not-allowed disabled:opacity-35',
+                          typeFilter === t
+                            ? 'bg-white/[0.09] text-white ring-1 ring-inset ring-white/15'
+                            : 'text-white/55 hover:bg-white/[0.04] hover:text-white/80'
+                        )}
+                      >
+                        {queueTypeLabel(t)}
+                        <span className="num ml-1.5 text-[11px] text-white/40">{typeCounts[t]}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 {exam.status !== 'ended' && queued.length > 0 && (
-                  <div className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl border border-white/[0.07] bg-ink-950/40 p-2.5">
+                  <div className="mt-3 flex flex-wrap items-center gap-2 rounded-2xl border border-white/[0.07] bg-ink-950/40 p-2.5">
                     <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13px] text-white/75 transition hover:bg-white/[0.04]">
                       <input
                         type="checkbox"
                         className="h-4 w-4 accent-[#DFB873]"
-                        checked={selected.length > 0 && selected.length === queued.length}
+                        // Select all works on the questions the filter shows; ticks on hidden ones are kept.
+                        checked={visibleIds.length > 0 && visibleSelected === visibleIds.length}
+                        disabled={visibleIds.length === 0}
                         ref={(el) => {
-                          if (el) el.indeterminate = selected.length > 0 && selected.length < queued.length;
+                          if (el) el.indeterminate = visibleSelected > 0 && visibleSelected < visibleIds.length;
                         }}
-                        onChange={(e) => setSelected(e.target.checked ? queued.map((q) => q.id) : [])}
-                        aria-label="Select all questions"
+                        onChange={(e) =>
+                          setSelected((prev) =>
+                            e.target.checked
+                              ? [...prev, ...visibleIds.filter((id) => !prev.includes(id))]
+                              : prev.filter((id) => !visibleIds.includes(id))
+                          )
+                        }
+                        aria-label={typeFilter === 'all' ? 'Select all questions' : `Select all ${typeLabel(typeFilter)} questions`}
                       />
-                      {selected.length ? `${selected.length} selected` : 'Select all'}
+                      {selected.length
+                        ? `${selected.length} selected`
+                        : typeFilter === 'all'
+                          ? 'Select all'
+                          : `Select all ${queueTypeLabel(typeFilter)}`}
                     </label>
                     <div className="ml-auto flex flex-wrap items-center gap-2">
                       {selected.length > 0 && (
@@ -817,9 +881,17 @@ export default function ControlRoomPage() {
                 )}
 
                 <div className="mt-3 space-y-2">
-                  {queued.map((q, idx) => {
+                  {visibleQueue.length === 0 && queued.length > 0 && (
+                    <p className="rounded-2xl border border-dashed border-white/[0.1] px-4 py-6 text-center text-[13px] text-white/55">
+                      No {typeFilter === 'all' ? '' : `${typeLabel(typeFilter as QuestionType)} `}questions in this session.{' '}
+                      <button type="button" onClick={() => setTypeFilter('all')} className="focus-ring rounded font-medium text-gold-200 hover:text-gold-100">
+                        Show all
+                      </button>
+                    </p>
+                  )}
+                  {visibleQueue.map(({ q, position }) => {
                     const isActive = active?.questionId === q.id;
-                    const delivered = active ? idx + 1 <= active.index : false;
+                    const delivered = active ? position <= active.index : false;
                     const isSelected = selected.includes(q.id);
                     return (
                       <div
@@ -839,7 +911,7 @@ export default function ControlRoomPage() {
                             className="h-4 w-4 shrink-0 cursor-pointer accent-[#DFB873]"
                             checked={isSelected}
                             onChange={() => toggleSelected(q.id)}
-                            aria-label={`Select question ${idx + 1}`}
+                            aria-label={`Select question ${position}`}
                           />
                         )}
                         <span
@@ -852,7 +924,7 @@ export default function ControlRoomPage() {
                                 : 'bg-white/[0.03] text-white/45 ring-white/[0.08]'
                           )}
                         >
-                          {idx + 1}
+                          {position}
                         </span>
                         <div className="min-w-[11rem] flex-1">
                           <p className="line-clamp-1 text-[13.5px] text-white/80">{q.prompt}</p>
@@ -876,7 +948,7 @@ export default function ControlRoomPage() {
                                 setOverrides((prev) => ({ ...prev, [q.id]: Number(e.target.value) }))
                               }
                               className="w-[86px] py-1.5 pl-7 text-[13px]"
-                              aria-label={`Timer for question ${idx + 1}`}
+                              aria-label={`Timer for question ${position}`}
                             />
                           </div>
                           <Button

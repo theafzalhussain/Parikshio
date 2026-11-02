@@ -464,3 +464,141 @@ export async function evaluateAnswer(input: EvaluationInput): Promise<Evaluation
   if (!result) throw new GeminiError(`${outcome.model} returned no score`, 'invalid-output', outcome.model);
   return result;
 }
+
+// ── model answers for the student reveal ──────────────────────
+/*
+ * Written questions often carry no examiner key ("Explain three disadvantages
+ * of computers…"), so after a question locks there is nothing to show a
+ * student who lost marks. The grader writes one model answer per question,
+ * in English and Hindi, which the server caches on the question.
+ */
+
+export interface ModelAnswerInput {
+  type: Extract<QuestionType, 'fill' | 'short' | 'long'>;
+  prompt: string;
+  topic: string;
+  maxPoints: number;
+  minWords: number;
+  explanation: string;
+  translatedPrompt?: string;
+}
+
+export interface ModelAnswer {
+  en: string;
+  hi: string;
+  model: string;
+}
+
+const MAX_MODEL_ANSWER_CHARS = 4_000;
+
+const MODEL_ANSWER_INSTRUCTION = `You are an experienced, careful examiner. After an exam question closes, students who lost marks study the model answer you write. Reply with JSON only.
+
+- Write the answer that would earn FULL marks: correct, complete, and exactly to the depth the question and its marks ask for. Every fact must be accurate; never invent details.
+- Fill in the blank: give only the word or phrase that fills the blank.
+- Short answer: 1-3 clear sentences covering the core idea.
+- Long answer: cover every point the marks need. When the question asks for a number of items ("any three ..."), give exactly that many, numbered "1. ", "2. " on separate lines, each with its explanation and, when asked, an example.
+- Follow the examiner's note when one is given.
+- Plain text only: no markdown, no headings, no bold, no preamble such as "Model answer:".
+- answer_en is in English. answer_hi is the same answer in clear, natural Hindi (Devanagari script) for a Hindi-medium student; keep standard technical terms (CPU, RAM, Ctrl + C, software) in English letters.`;
+
+const MODEL_ANSWER_SCHEMA = {
+  type: 'object',
+  properties: {
+    answer_en: { type: 'string' },
+    answer_hi: { type: 'string' }
+  },
+  required: ['answer_en', 'answer_hi']
+} as const;
+
+function modelAnswerPrompt(input: ModelAnswerInput): string {
+  const kind = input.type === 'fill' ? 'Fill in the blank' : input.type === 'long' ? 'Long answer (descriptive)' : 'Short answer';
+  return [
+    `QUESTION TYPE: ${kind}`,
+    `TOPIC: ${input.topic || 'General'}`,
+    `MARKS: ${input.maxPoints}`,
+    input.minWords > 0 ? `EXPECTED LENGTH: at least ${input.minWords} words.` : '',
+    '',
+    `QUESTION:\n${input.prompt}`,
+    input.translatedPrompt?.trim() ? `\nQUESTION IN HINDI (as students read it):\n${input.translatedPrompt.trim()}` : '',
+    input.explanation.trim() ? `\nEXAMINER NOTE:\n${input.explanation.trim()}` : ''
+  ]
+    .filter((line) => line !== '')
+    .join('\n');
+}
+
+async function callModelAnswer(model: string, input: ModelAnswerInput, withThinking = true): Promise<ModelAnswer> {
+  const started = Date.now();
+  let res: globalThis.Response;
+  try {
+    res = await fetch(`${API_BASE}/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.gemini.apiKey },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: MODEL_ANSWER_INSTRUCTION }] },
+        contents: [{ role: 'user', parts: [{ text: modelAnswerPrompt(input) }] }],
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: 'application/json',
+          responseJsonSchema: MODEL_ANSWER_SCHEMA,
+          ...(withThinking && config.gemini.thinkingLevel ? { thinkingConfig: { thinkingLevel: config.gemini.thinkingLevel } } : {})
+        }
+      }),
+      signal: AbortSignal.timeout(config.gemini.timeoutMs)
+    });
+  } catch (err) {
+    coolDown(model, 30_000);
+    const timedOut = (err as Error)?.name === 'TimeoutError' || (err as Error)?.name === 'AbortError';
+    throw new GeminiError(timedOut ? `${model} did not answer in time` : `Could not reach Gemini (${(err as Error).message})`, 'unavailable', model);
+  }
+
+  const payload = (await res.json().catch(() => null)) as GeminiReply | null;
+  if (config.gemini.debug) console.log(`[gemini] ${model} · model answer · HTTP ${res.status} · ${Date.now() - started}ms`);
+  if (!res.ok) {
+    const message = (payload?.error?.message ?? `HTTP ${res.status}`).split(' For more information')[0].slice(0, 240);
+    if (res.status === 400 && withThinking && /thinking/i.test(message)) return callModelAnswer(model, input, false);
+    if (res.status === 401 || (res.status === 403 && /api key|api_key|credential/i.test(message))) {
+      throw new GeminiError(`Gemini rejected the API key: ${message}`, 'config', model);
+    }
+    if (res.status === 429) coolDown(model, rateLimitCooldownMs(payload?.error));
+    else if (res.status === 404) coolDown(model, 6 * 60 * 60_000);
+    else if (res.status >= 500) coolDown(model, 30_000);
+    throw new GeminiError(`${model}: ${message}`, res.status === 429 || res.status >= 500 ? 'busy' : 'unavailable', model);
+  }
+
+  const text = (payload?.candidates?.[0]?.content?.parts ?? [])
+    .filter((part) => !part.thought)
+    .map((part) => part.text ?? '')
+    .join('')
+    .trim();
+  let parsed: { answer_en?: unknown; answer_hi?: unknown };
+  try {
+    parsed = extractJson(text) as typeof parsed;
+  } catch {
+    throw new GeminiError(`${model} returned malformed JSON`, 'invalid-output', model);
+  }
+  // Numbered points on their own lines, even when the model ran them into one paragraph.
+  const clean = (value: unknown) =>
+    String(value ?? '')
+      .trim()
+      .replace(/[ \t]+(?=\d{1,2}\.\s+\S)/g, '\n')
+      .slice(0, MAX_MODEL_ANSWER_CHARS);
+  const en = clean(parsed?.answer_en);
+  if (!en) throw new GeminiError(`${model} returned an empty model answer`, 'invalid-output', model);
+  return { en, hi: clean(parsed?.answer_hi), model };
+}
+
+/** One model answer (English + Hindi), walking the model chain like grading does. */
+export async function generateModelAnswer(input: ModelAnswerInput): Promise<ModelAnswer> {
+  if (!config.gemini.enabled) throw new GeminiError('AI is not configured — set GEMINI_API_KEY', 'config');
+  let lastError: GeminiError | null = null;
+  for (const model of availableModels()) {
+    try {
+      return await callModelAnswer(model, input);
+    } catch (err) {
+      const error = err instanceof GeminiError ? err : new GeminiError((err as Error)?.message ?? 'Unknown error', 'unavailable', model);
+      if (error.kind === 'config') throw error;
+      lastError = error;
+    }
+  }
+  throw lastError ?? new GeminiError('Every Gemini model is busy right now', 'busy');
+}

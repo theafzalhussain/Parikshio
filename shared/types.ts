@@ -52,6 +52,62 @@ export interface Question {
    * question makes the old translation stale instead of wrong.
    */
   translations?: Partial<Record<TranslationLang, QuestionTranslation>>;
+  /**
+   * Answer material prepared for the after-lock reveal on student devices (an
+   * AI-written model answer, the Hindi of the key). Server-made, and stale as
+   * soon as the question is edited (see `sourceHash`).
+   */
+  revealKit?: QuestionRevealKit;
+}
+
+/** Cached once per question for the student answer reveal. */
+export interface QuestionRevealKit {
+  /** Hash of the question text and answer key this was made from. */
+  sourceHash: string;
+  /** Written questions with no examiner key: a model answer written by the AI grader. */
+  modelAnswer?: { en: string; hi: string; model: string; createdAt: number };
+  /** Hindi of the examiner's accepted answers and explanation (DeepL). */
+  hi?: { answers: string[]; explanation: string; translatedAt: number };
+}
+
+/**
+ * The answer to a live question, shown to one student after it closes, and
+ * only when they did not earn full marks: a wrong answer, partial marks, or no
+ * answer before the lock. Never sent while the question is still open.
+ */
+export interface AnswerReveal {
+  questionId: string;
+  /** Position in the session order. */
+  index: number;
+  type: QuestionType;
+  prompt: string;
+  options: string[];
+  points: number;
+  outcome: 'incorrect' | 'partial' | 'unanswered';
+  awarded: number;
+  myAnswer: string | null;
+  /** MCQ / True-False. */
+  correctOptionIndex?: number;
+  /** Fill / short / long: the examiner's accepted answers, or the AI model answer. */
+  answers: string[];
+  answerSource: 'key' | 'ai' | 'none';
+  explanation?: string;
+  /** The AI evaluation of this student's own written answer. */
+  feedback?: { text: string; strengths: string[]; improvements: string[] };
+  /** The same material in Hindi, as far as it is ready. */
+  hindi?: {
+    prompt?: string;
+    options?: string[];
+    answers?: string[];
+    explanation?: string;
+    feedback?: string;
+    strengths?: string[];
+    improvements?: string[];
+  };
+  /** The student's own answer is written in Hindi (Devanagari). */
+  answeredInHindi: boolean;
+  /** The AI model answer or a Hindi version is still being prepared; a fresh view follows. */
+  preparing: boolean;
 }
 
 /** Languages a student can switch a question into. */
@@ -78,7 +134,7 @@ export interface StudentTranslation {
 
 export type QuestionInput = Omit<
   Question,
-  'id' | 'createdBy' | 'createdAt' | 'sourcePaperId' | 'sourcePaperName' | 'sourceIndex' | 'translations'
+  'id' | 'createdBy' | 'createdAt' | 'sourcePaperId' | 'sourcePaperName' | 'sourceIndex' | 'translations' | 'revealKit'
 >;
 
 /** An uploaded question paper (PDF / DOCX / image / pasted text). */
@@ -301,6 +357,11 @@ export interface ExamPublic {
   showLeaderboard: boolean;
   /** Question-by-question review, only once the session has ended. */
   review?: ReviewItem[];
+  /**
+   * Answers to closed live questions this student lost marks on: the question
+   * on screen once it locks, and the one before it. Newest first.
+   */
+  reveals?: AnswerReveal[];
   endedAt?: number;
   /** The server can translate questions into Hindi for this student. */
   translationAvailable?: boolean;

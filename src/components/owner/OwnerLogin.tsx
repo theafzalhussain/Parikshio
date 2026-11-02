@@ -5,6 +5,7 @@ import { ArrowLeft, Eye, EyeOff, KeyRound, Lock, Mail, ShieldCheck } from 'lucid
 import { LogoMark } from '@/components/Logo';
 import { Button } from '@/components/ui/Button';
 import { Input, Label } from '@/components/ui/Field';
+import { wakeServer } from '@/lib/api';
 import { lastOwnerEmail, ownerApi, saveOwnerSession } from '@/lib/owner';
 import type { OwnerSignIn } from '@shared/owner';
 import { errorText } from './common';
@@ -29,6 +30,9 @@ export function OwnerLogin({ notice, onSignedIn }: { notice: string | null; onSi
     const last = lastOwnerEmail();
     // An address remembered from before the owner email changed is no longer valid.
     setEmail(last.endsWith('@parikshio.tech') ? '' : last);
+    // A sleeping API host would otherwise only start waking when Sign in is
+    // pressed; wake it while the owner types, so the sign-in answers at once.
+    wakeServer();
   }, []);
   useEffect(() => {
     if (cooldown <= 0) return;
