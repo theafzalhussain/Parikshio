@@ -4,6 +4,8 @@ import './globals.css';
 import { AuthProvider } from '@/lib/auth';
 import { ToastProvider } from '@/components/ui/Toast';
 import { BrandDefs } from '@/components/Logo';
+import { JsonLd } from '@/components/seo/JsonLd';
+import { SEO_KEYWORDS, SEO_TITLE, softwareJsonLd } from '@/lib/seo';
 import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from '@/lib/site';
 import { API_ORIGIN_FOR_HINTS } from '@/lib/api';
 
@@ -32,28 +34,22 @@ const display = Fraunces({
   variable: '--font-display'
 });
 
-const DEFAULT_TITLE = `${SITE_NAME} — Live exams for universities, schools and coaching institutes`;
-
 export const metadata: Metadata = {
-  // Absolute base for the Open Graph image and canonical URLs.
   metadataBase: new URL(SITE_URL),
   title: {
-    default: DEFAULT_TITLE,
+    default: SEO_TITLE,
     template: `%s · ${SITE_NAME}`
   },
   description: SITE_DESCRIPTION,
   applicationName: SITE_NAME,
-  keywords: [
-    'online exam platform',
-    'live quiz for classrooms',
-    'assessment software',
-    'mock test platform',
-    'auto grading',
-    'pariksha',
-    SITE_NAME
-  ],
+  category: 'education',
+  keywords: SEO_KEYWORDS,
+  authors: [{ name: SITE_NAME, url: SITE_URL }],
+  creator: SITE_NAME,
+  publisher: SITE_NAME,
+  alternates: { canonical: '/' },
   openGraph: {
-    title: DEFAULT_TITLE,
+    title: SEO_TITLE,
     description: SITE_DESCRIPTION,
     siteName: SITE_NAME,
     type: 'website',
@@ -62,8 +58,13 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: DEFAULT_TITLE,
+    title: SEO_TITLE,
     description: SITE_DESCRIPTION
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: { index: true, follow: true, 'max-image-preview': 'large', 'max-snippet': -1 }
   }
 };
 
@@ -71,17 +72,17 @@ export const viewport: Viewport = {
   themeColor: '#060A14',
   width: 'device-width',
   initialScale: 1,
-  // Lets the dark UI paint behind the notch/status bar on mobile.
   viewportFit: 'cover'
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${sans.variable} ${display.variable}`} suppressHydrationWarning>
+    <html lang="en-IN" className={`${sans.variable} ${display.variable}`} suppressHydrationWarning>
       <head>
         {/* The API lives on its own host: open the connection (DNS + TLS) while the page loads. */}
         {API_ORIGIN_FOR_HINTS && <link rel="preconnect" href={API_ORIGIN_FOR_HINTS} crossOrigin="anonymous" />}
         {API_ORIGIN_FOR_HINTS && <link rel="dns-prefetch" href={API_ORIGIN_FOR_HINTS} />}
+        <JsonLd data={softwareJsonLd()} />
       </head>
       <body className="min-h-screen bg-ink-950 font-sans antialiased">
         {/* Shared SVG gradients for the logo and seal, defined once per page. */}

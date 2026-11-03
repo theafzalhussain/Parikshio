@@ -34,14 +34,19 @@ import { CONTACT_EMAIL, SITE_DESCRIPTION, SITE_DOMAIN, SITE_NAME, SITE_URL, SOCI
  */
 
 const DESCRIPTION =
-  'Parikshio is a live assessment platform for universities, colleges, schools and coaching institutes: question papers, live exams on a server-synced timer, instant and AI-assisted grading, and analytics in one secure workflow.';
+  'Parikshio is free online exam software for universities, colleges, schools and coaching institutes: question papers, live exams on a server-synced timer, instant and AI-assisted grading, and analytics in one workflow.';
 
 export const metadata: Metadata = {
-  title: 'About',
+  title: 'About — free online exams for schools and institutes',
   description: DESCRIPTION,
+  keywords: [
+    'about Parikshio',
+    'free online exam software India',
+    'school college institute assessment'
+  ],
   alternates: { canonical: '/about' },
   openGraph: {
-    title: `About ${SITE_NAME}`,
+    title: `About ${SITE_NAME} — free online exam software`,
     description: DESCRIPTION,
     url: '/about',
     type: 'website'

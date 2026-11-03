@@ -36,6 +36,18 @@ import { LinkButton } from '@/components/ui/Button';
 import { cx } from '@/lib/api';
 
 export const metadata: Metadata = {
+  title: {
+    absolute:
+      'Free Online Exam Software for Schools, Colleges & Institutes | Parikshio'
+  },
+  description:
+    'Run free online exams for your school, college or institute. Live or self-paced tests, server-synced timer, auto-grading, OCR paper upload and a live leaderboard — nothing to install.',
+  keywords: [
+    'free online exam software',
+    'online exam for schools',
+    'college online test',
+    'institute mock test platform'
+  ],
   alternates: { canonical: '/' }
 };
 

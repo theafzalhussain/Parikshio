@@ -1,0 +1,30 @@
+# Parikshio
+
+> Free live exam software for schools, colleges, universities and coaching institutes.
+
+Parikshio (https://www.parikshio.tech) lets an institute run an online exam in the browser. Faculty push questions with a server-synced timer — one at a time or a whole paper at once. Students join with a short code on any phone, tablet or laptop. Answers auto-grade as they arrive. Written answers can be scored with AI. Papers can be uploaded with OCR. Google Classroom sync, a live leaderboard, analytics and CSV export are included. Nothing to install.
+
+## Who it is for
+
+- Schools: classroom quizzes, nothing to install
+- Colleges and universities: lecture-hall assessments, one join code
+- Coaching and training institutes: timed mock tests and practice papers
+
+## Product facts
+
+- 5 question formats
+- 2 exam modes (live push and self-paced)
+- Server clock for every student
+- Instant auto-grading and AI evaluation for written answers
+- Offline-safe answer save
+- Paper upload with OCR
+- Google Classroom roster matching
+
+## Links
+
+- Home: https://www.parikshio.tech/
+- About: https://www.parikshio.tech/about
+- Sign up: https://www.parikshio.tech/signup
+- Contact: https://www.parikshio.tech/contact
+- Privacy: https://www.parikshio.tech/privacy
+- Terms: https://www.parikshio.tech/terms

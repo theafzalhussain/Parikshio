@@ -5,9 +5,9 @@
  */
 
 export const SITE_NAME = 'Parikshio';
-export const SITE_TAGLINE = 'Live assessment platform';
+export const SITE_TAGLINE = 'Free online exams for schools, colleges and institutes';
 export const SITE_DESCRIPTION =
-  'Parikshio is the live exam platform for universities, schools and coaching institutes. Push questions to every student with a server-synced timer — one at a time or a whole paper at once — and see answers graded the moment they arrive.';
+  'Parikshio is free online exam software for schools, colleges, universities and coaching institutes. Conduct live or self-paced tests with a server-synced timer, auto-grading, OCR paper upload and a live leaderboard — nothing to install.';
 
 /**
  * Canonical public origin. The live site answers on www (the bare domain
